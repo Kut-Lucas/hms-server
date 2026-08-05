@@ -94,15 +94,15 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Frontend URL from Render environment variables
-const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+const clientUrl = process.env.CLIENT_URL || "https://hms-client-1.onrender.com";
 
 // Allowed frontend origins
 const allowedOrigins = [
   clientUrl,
-  'https://hms-client-f8lm.onrender.com',
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://192.168.0.105:5173',
+  "https://hms-client-1.onrender.com",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://192.168.0.105:5173",
 ].filter(Boolean);
 
 // Remove duplicate origins
