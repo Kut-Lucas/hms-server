@@ -76,6 +76,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 
+import { pool } from "./db/pool.js";
 import { authMiddleware } from "./middleware/auth.js";
 
 import authRoutes from "./routes/authRoutes.js";
@@ -91,20 +92,20 @@ import financeRoutes from "./routes/financeRoutes.js";
 
 const app = express();
 
-const PORT = process.env.PORT || 5000;
-
-const clientUrl =
-  process.env.CLIENT_URL ||
-  "https://hms-client-1.onrender.com";
-
 /*
 |--------------------------------------------------------------------------
-| ALLOWED FRONTEND ORIGINS
+| SERVER CONFIGURATION
 |--------------------------------------------------------------------------
 */
 
+const PORT = Number(process.env.PORT) || 5000;
+
+const CLIENT_URL =
+  process.env.CLIENT_URL ||
+  "https://hms-client-1.onrender.com";
+
 const allowedOrigins = [
-  clientUrl,
+  CLIENT_URL,
   "https://hms-client-1.onrender.com",
 
   // Local development
@@ -114,20 +115,31 @@ const allowedOrigins = [
 ];
 
 const uniqueOrigins = [
-  ...new Set(allowedOrigins.filter(Boolean)),
+  ...new Set(
+    allowedOrigins
+      .filter(Boolean)
+      .map((origin) => origin.replace(/\/$/, ""))
+  ),
 ];
 
+console.log("");
 console.log("======================================");
-console.log("HMS SERVER CONFIGURATION");
+console.log("        HMS SERVER CONFIGURATION");
+console.log("======================================");
 console.log("PORT:", PORT);
-console.log("CLIENT_URL:", clientUrl);
+console.log("NODE_ENV:", process.env.NODE_ENV || "development");
+console.log("CLIENT_URL:", CLIENT_URL);
 console.log("ALLOWED ORIGINS:", uniqueOrigins);
+console.log("DATABASE HOST:", process.env.DB_HOST || "NOT SET");
+console.log("DATABASE NAME:", process.env.DB_NAME || "NOT SET");
+console.log("DATABASE USER:", process.env.DB_USER || "NOT SET");
+console.log("DATABASE PORT:", process.env.DB_PORT || "3306");
 console.log("======================================");
-
+console.log("");
 
 /*
 |--------------------------------------------------------------------------
-| SECURITY / MIDDLEWARE
+| SECURITY
 |--------------------------------------------------------------------------
 */
 
@@ -136,12 +148,62 @@ app.use(
     crossOriginResourcePolicy: {
       policy: "cross-origin",
     },
+
+    // The frontend and API are on different Render domains.
+    crossOriginOpenerPolicy: false,
   })
 );
 
-app.use(morgan("dev"));
+/*
+|--------------------------------------------------------------------------
+| REQUEST LOGGING
+|--------------------------------------------------------------------------
+*/
 
-app.use(cookieParser());
+app.use(
+  morgan((tokens, req, res) => {
+    const responseTime = tokens["response-time"](req, res);
+
+    return [
+      tokens.method(req, res),
+      tokens.url(req, res),
+      tokens.status(req, res),
+      `${responseTime} ms`,
+      `Origin=${req.headers.origin || "none"}`,
+    ].join(" ");
+  })
+);
+
+/*
+|--------------------------------------------------------------------------
+| REQUEST TIMER
+|--------------------------------------------------------------------------
+|
+| Helps identify requests that are taking too long.
+|
+*/
+
+app.use((req, res, next) => {
+  const started = Date.now();
+
+  res.on("finish", () => {
+    const duration = Date.now() - started;
+
+    if (duration > 5000) {
+      console.warn(
+        `[SLOW REQUEST] ${req.method} ${req.originalUrl} took ${duration} ms`
+      );
+    }
+  });
+
+  next();
+});
+
+/*
+|--------------------------------------------------------------------------
+| BODY PARSING
+|--------------------------------------------------------------------------
+*/
 
 app.use(
   express.json({
@@ -149,6 +211,20 @@ app.use(
   })
 );
 
+app.use(
+  express.urlencoded({
+    extended: true,
+    limit: "10mb",
+  })
+);
+
+/*
+|--------------------------------------------------------------------------
+| COOKIES
+|--------------------------------------------------------------------------
+*/
+
+app.use(cookieParser());
 
 /*
 |--------------------------------------------------------------------------
@@ -160,26 +236,32 @@ app.use(
   cors({
     origin(origin, callback) {
       /*
-       * Requests without an Origin header are allowed.
-       * This includes some server-to-server requests and health checks.
+       * Allow requests without an Origin header.
+       *
+       * This is useful for:
+       * - curl
+       * - Render health checks
+       * - server-to-server requests
        */
       if (!origin) {
         return callback(null, true);
       }
 
-      if (uniqueOrigins.includes(origin)) {
+      const normalizedOrigin = origin.replace(/\/$/, "");
+
+      if (uniqueOrigins.includes(normalizedOrigin)) {
         return callback(null, true);
       }
 
-      console.warn(
-        "CORS BLOCKED ORIGIN:",
-        origin
-      );
+      console.warn("");
+      console.warn("======================================");
+      console.warn("CORS BLOCKED");
+      console.warn("Origin:", origin);
+      console.warn("Allowed:", uniqueOrigins);
+      console.warn("======================================");
 
       return callback(
-        new Error(
-          `CORS blocked request from origin: ${origin}`
-        )
+        new Error(`CORS blocked request from origin: ${origin}`)
       );
     },
 
@@ -202,41 +284,174 @@ app.use(
       "Origin",
     ],
 
+    exposedHeaders: [
+      "Content-Length",
+      "Content-Type",
+    ],
+
     optionsSuccessStatus: 204,
   })
 );
-
 
 /*
 |--------------------------------------------------------------------------
 | HEALTH CHECK
 |--------------------------------------------------------------------------
+|
+| Both URLs are provided:
+|
+| /health
+| /api/health
+|
 */
 
-app.get("/api/health", (req, res) => {
+const healthResponse = (req, res) => {
   res.status(200).json({
     success: true,
     ok: true,
     message: "HMS API is running",
+    environment: process.env.NODE_ENV || "development",
+    timestamp: new Date().toISOString(),
+  });
+};
+
+app.get("/health", healthResponse);
+app.get("/api/health", healthResponse);
+
+/*
+|--------------------------------------------------------------------------
+| DATABASE HEALTH CHECK
+|--------------------------------------------------------------------------
+|
+| This endpoint is extremely important for diagnosing the current
+| login problem.
+|
+| Open:
+|
+| https://hms-server-odkt.onrender.com/api/db-test
+|
+*/
+
+app.get("/api/db-test", async (req, res) => {
+  const started = Date.now();
+
+  console.log("");
+  console.log("======================================");
+  console.log("DATABASE TEST");
+  console.log("======================================");
+  console.log("Running: SELECT 1");
+
+  try {
+    const [rows] = await pool.execute(
+      "SELECT 1 AS test"
+    );
+
+    const duration = Date.now() - started;
+
+    console.log("DATABASE TEST SUCCESS");
+    console.log("Result:", rows);
+    console.log("Time:", `${duration} ms`);
+    console.log("======================================");
+    console.log("");
+
+    return res.status(200).json({
+      success: true,
+      database: "connected",
+      result: rows,
+      durationMs: duration,
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (error) {
+    const duration = Date.now() - started;
+
+    console.error("");
+    console.error("======================================");
+    console.error("DATABASE TEST FAILED");
+    console.error("======================================");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("Errno:", error.errno);
+    console.error("SQL State:", error.sqlState);
+    console.error("Time:", `${duration} ms`);
+    console.error("======================================");
+    console.error("");
+
+    return res.status(500).json({
+      success: false,
+      database: "failed",
+      message: error.message,
+      code: error.code || null,
+      errno: error.errno || null,
+      sqlState: error.sqlState || null,
+      durationMs: duration,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+/*
+|--------------------------------------------------------------------------
+| DATABASE INFORMATION
+|--------------------------------------------------------------------------
+|
+| This is a diagnostic endpoint.
+|
+| It does NOT expose the database password.
+|
+*/
+
+app.get("/api/db-info", async (req, res) => {
+  try {
+    const [rows] = await pool.execute(`
+      SELECT
+        DATABASE() AS database_name,
+        USER() AS database_user,
+        VERSION() AS mysql_version,
+        NOW() AS database_time
+    `);
+
+    return res.status(200).json({
+      success: true,
+      database: rows[0],
+    });
+
+  } catch (error) {
+    console.error("[DB INFO ERROR]", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+      code: error.code || null,
+    });
+  }
+});
+
+/*
+|--------------------------------------------------------------------------
+| ROOT ROUTE
+|--------------------------------------------------------------------------
+*/
+
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "HMS API is running",
+    version: "1.0.0",
     timestamp: new Date().toISOString(),
   });
 });
-
 
 /*
 |--------------------------------------------------------------------------
 | AUTH ROUTES
 |--------------------------------------------------------------------------
-|
-| Login, register, refresh, logout, me, etc.
-|
 */
 
 app.use(
   "/api/auth",
   authRoutes
 );
-
 
 /*
 |--------------------------------------------------------------------------
@@ -298,21 +513,6 @@ app.use(
   financeRoutes
 );
 
-
-/*
-|--------------------------------------------------------------------------
-| ROOT ROUTE
-|--------------------------------------------------------------------------
-*/
-
-app.get("/", (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "HMS API is running",
-  });
-});
-
-
 /*
 |--------------------------------------------------------------------------
 | 404 HANDLER
@@ -320,42 +520,98 @@ app.get("/", (req, res) => {
 */
 
 app.use((req, res) => {
-  res.status(404).json({
+  console.warn(
+    `[404] ${req.method} ${req.originalUrl}`
+  );
+
+  return res.status(404).json({
     success: false,
     message: `Route not found: ${req.method} ${req.originalUrl}`,
   });
 });
 
-
 /*
 |--------------------------------------------------------------------------
-| ERROR HANDLER
+| GLOBAL ERROR HANDLER
 |--------------------------------------------------------------------------
 */
 
 app.use((err, req, res, next) => {
+  console.error("");
   console.error("======================================");
-  console.error("SERVER ERROR");
+  console.error("GLOBAL SERVER ERROR");
   console.error("======================================");
-  console.error(err);
+  console.error("Method:", req.method);
+  console.error("URL:", req.originalUrl);
+  console.error("Origin:", req.headers.origin);
+  console.error("Message:", err.message);
+  console.error("Stack:", err.stack);
   console.error("======================================");
+  console.error("");
 
-  /*
-   * CORS errors should return a clear response
-   */
-  if (err.message?.startsWith("CORS blocked")) {
+  if (
+    err.message &&
+    err.message.startsWith("CORS blocked")
+  ) {
     return res.status(403).json({
       success: false,
       message: err.message,
     });
   }
 
-  res.status(500).json({
+  return res.status(500).json({
     success: false,
     message: "Internal server error",
   });
 });
 
+/*
+|--------------------------------------------------------------------------
+| STARTUP DATABASE TEST
+|--------------------------------------------------------------------------
+|
+| This checks the database when Render starts the server.
+|
+*/
+
+async function testDatabaseConnection() {
+  console.log("");
+  console.log("======================================");
+  console.log("DATABASE STARTUP TEST");
+  console.log("======================================");
+
+  const started = Date.now();
+
+  try {
+    const [rows] = await pool.execute(
+      "SELECT 1 AS test"
+    );
+
+    const duration = Date.now() - started;
+
+    console.log("✅ DATABASE CONNECTED");
+    console.log("Result:", rows);
+    console.log("Response time:", `${duration} ms`);
+    console.log("======================================");
+    console.log("");
+
+    return true;
+
+  } catch (error) {
+    const duration = Date.now() - started;
+
+    console.error("❌ DATABASE CONNECTION FAILED");
+    console.error("Message:", error.message);
+    console.error("Code:", error.code);
+    console.error("Errno:", error.errno);
+    console.error("SQL State:", error.sqlState);
+    console.error("Time:", `${duration} ms`);
+    console.error("======================================");
+    console.error("");
+
+    return false;
+  }
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -363,19 +619,113 @@ app.use((err, req, res, next) => {
 |--------------------------------------------------------------------------
 */
 
-app.listen(
+const server = app.listen(
   PORT,
   "0.0.0.0",
-  () => {
-    console.log(
-      `HMS API listening on port ${PORT}`
+  async () => {
+    console.log("");
+    console.log("======================================");
+    console.log("        HMS API STARTED");
+    console.log("======================================");
+    console.log(`Port: ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(`Client: ${CLIENT_URL}`);
+    console.log("Root: /");
+    console.log("Health: /health");
+    console.log("API Health: /api/health");
+    console.log("DB Test: /api/db-test");
+    console.log("DB Info: /api/db-info");
+    console.log("======================================");
+    console.log("");
+
+    await testDatabaseConnection();
+  }
+);
+
+/*
+|--------------------------------------------------------------------------
+| SERVER TIMEOUTS
+|--------------------------------------------------------------------------
+|
+| Prevent connections from remaining open forever.
+|
+*/
+
+server.requestTimeout = 60000;
+server.headersTimeout = 65000;
+server.keepAliveTimeout = 5000;
+
+/*
+|--------------------------------------------------------------------------
+| GRACEFUL SHUTDOWN
+|--------------------------------------------------------------------------
+*/
+
+async function shutdown(signal) {
+  console.log("");
+  console.log(`Received ${signal}. Shutting down HMS server...`);
+
+  server.close(async () => {
+    try {
+      await pool.end();
+
+      console.log("Database pool closed.");
+      console.log("HMS server stopped.");
+
+      process.exit(0);
+    } catch (error) {
+      console.error(
+        "Error while closing database pool:",
+        error
+      );
+
+      process.exit(1);
+    }
+  });
+
+  setTimeout(() => {
+    console.error(
+      "Forced shutdown after timeout."
     );
 
-    console.log(
-      `Environment: ${
-        process.env.NODE_ENV || "development"
-      }`
+    process.exit(1);
+  }, 10000);
+}
+
+process.on(
+  "SIGTERM",
+  () => shutdown("SIGTERM")
+);
+
+process.on(
+  "SIGINT",
+  () => shutdown("SIGINT")
+);
+
+/*
+|--------------------------------------------------------------------------
+| UNHANDLED ERRORS
+|--------------------------------------------------------------------------
+*/
+
+process.on(
+  "unhandledRejection",
+  (reason) => {
+    console.error(
+      "UNHANDLED PROMISE REJECTION:",
+      reason
     );
   }
 );
 
+process.on(
+  "uncaughtException",
+  (error) => {
+    console.error(
+      "UNCAUGHT EXCEPTION:",
+      error
+    );
+  }
+);
+
+export default app;
