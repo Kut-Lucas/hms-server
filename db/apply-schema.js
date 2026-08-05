@@ -19,8 +19,8 @@ async function main() {
   const sql = fs.readFileSync(schemaPath, 'utf8');
   const conn = await mysql.createConnection({
     host: process.env.DB_HOST || '127.0.0.1',
-    user: process.env.DB_USER || 'kut',
-    password: process.env.DB_PASSWORD || '',
+    user: process.env.MYSQL_USER || 'kut',
+    password: process.env.MYSQL_PASSWORD || '',
     multipleStatements: true,
   });
   console.log('Applying schema (this may take a few seconds)...');
