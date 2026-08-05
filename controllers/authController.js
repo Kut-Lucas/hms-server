@@ -268,9 +268,7 @@ import {
 
 import { sendPasswordChangedEmail } from "../utils/mailer.js";
 
-
 const SALT = 10;
-
 
 /*
 |--------------------------------------------------------------------------
@@ -288,7 +286,6 @@ function clientIp(req) {
   );
 }
 
-
 /*
 |--------------------------------------------------------------------------
 | REGISTER
@@ -297,43 +294,26 @@ function clientIp(req) {
 
 export async function register(req, res) {
   try {
-    const {
-      full_name,
-      email,
-      password,
-    } = req.body || {};
+    const { full_name, email, password } = req.body || {};
 
-    if (
-      !full_name ||
-      !email ||
-      !password
-    ) {
+    if (!full_name || !email || !password) {
       return res.status(400).json({
         success: false,
-        message:
-          "Missing required fields",
+        message: "Missing required fields",
       });
     }
 
     if (password.length < 8) {
       return res.status(400).json({
         success: false,
-        message:
-          "Password must be at least 8 characters",
+        message: "Password must be at least 8 characters",
       });
     }
 
-    const cleanEmail =
-      email.trim().toLowerCase();
+    const cleanName = full_name.trim();
+    const cleanEmail = email.trim().toLowerCase();
 
-    const cleanName =
-      full_name.trim();
-
-    const hash =
-      await bcrypt.hash(
-        password,
-        SALT
-      );
+    const hash = await bcrypt.hash(password, SALT);
 
     await pool.execute(
       `INSERT INTO users
@@ -347,26 +327,16 @@ export async function register(req, res) {
         )
        VALUES
         (?, ?, ?, 'receptionist', FALSE, TRUE)`,
-      [
-        cleanName,
-        cleanEmail,
-        hash,
-      ]
+      [cleanName, cleanEmail, hash]
     );
 
-    /*
-     * Audit logging should not prevent
-     * registration from completing.
-     */
     try {
       await auditLog(
         null,
         "USER_REGISTER",
         "users",
         null,
-        {
-          email: cleanEmail,
-        },
+        { email: cleanEmail },
         clientIp(req)
       );
     } catch (auditError) {
@@ -381,36 +351,24 @@ export async function register(req, res) {
       message:
         "Registration successful. Pending admin approval before you can log in.",
     });
-
   } catch (e) {
+    console.error("REGISTER ERROR:", e);
 
-    console.error(
-      "REGISTER ERROR:",
-      e
-    );
-
-    if (
-      e.code === "ER_DUP_ENTRY"
-    ) {
+    if (e.code === "ER_DUP_ENTRY") {
       return res.status(400).json({
         success: false,
-        message:
-          "Email already registered",
+        message: "Email already registered",
       });
     }
 
-    const {
-      status,
-      message,
-    } = mapDbError(e);
+    const { status, message } = mapDbError(e);
 
-    return res.status(status).json({
+    return res.status(status || 500).json({
       success: false,
-      message,
+      message: message || "Registration failed",
     });
   }
 }
-
 
 /*
 |--------------------------------------------------------------------------
@@ -419,225 +377,174 @@ export async function register(req, res) {
 */
 
 export async function login(req, res) {
-
-  console.log(
-    "======================================"
-  );
-
-  console.log(
-    "LOGIN REQUEST RECEIVED"
-  );
-
-  console.log(
-    "Origin:",
-    req.headers.origin
-  );
-
-  console.log(
-    "======================================"
-  );
-
+  console.log("======================================");
+  console.log("LOGIN STARTED");
+  console.log("Origin:", req.headers.origin);
+  console.log("======================================");
 
   try {
+    const { email, password } = req.body || {};
 
-    const {
-      email,
-      password,
-    } = req.body || {};
-
+    console.log("Email received:", email);
 
     /*
     |--------------------------------------------------------------------------
-    | VALIDATE INPUT
+    | Validate input
     |--------------------------------------------------------------------------
     */
 
-    if (
-      !email ||
-      !password
-    ) {
-      console.log(
-        "LOGIN FAILED: Missing email/password"
-      );
+    if (!email || !password) {
+      console.log("LOGIN ERROR: Missing email or password");
 
       return res.status(400).json({
         success: false,
-        message:
-          "Email and password required",
+        message: "Email and password required",
       });
     }
 
-
-    const cleanEmail =
-      email.trim().toLowerCase();
-
-
-    console.log(
-      "Looking up user:",
-      cleanEmail
-    );
-
+    const cleanEmail = email.trim().toLowerCase();
 
     /*
     |--------------------------------------------------------------------------
-    | FIND USER
+    | STEP 1 - Find user
     |--------------------------------------------------------------------------
     */
 
-    const [rows] =
-      await pool.execute(
-        `SELECT
-          id,
-          full_name,
-          email,
-          password_hash,
-          role,
-          is_approved,
-          is_active
-         FROM users
-         WHERE email = ?
-         LIMIT 1`,
-        [cleanEmail]
-      );
+    console.log("STEP 1: Searching for user...");
 
-
-    const user =
-      rows[0];
-
-
-    console.log(
-      "User found:",
-      !!user
+    const [rows] = await pool.execute(
+      `SELECT
+        id,
+        full_name,
+        email,
+        password_hash,
+        role,
+        is_approved,
+        is_active
+       FROM users
+       WHERE email = ?
+       LIMIT 1`,
+      [cleanEmail]
     );
 
+    console.log("STEP 1 COMPLETE");
+    console.log("User found:", rows.length > 0);
 
-    /*
-    |--------------------------------------------------------------------------
-    | PASSWORD CHECK
-    |--------------------------------------------------------------------------
-    */
+    const user = rows[0];
 
     if (!user) {
+      console.log("LOGIN FAILED: User not found");
 
-      console.log(
-        "LOGIN FAILED: User does not exist"
-      );
-
-      return res.status(401).json({
-        success: false,
-        message:
-          "Invalid credentials",
-      });
-    }
-
-
-    if (
-      !user.password_hash ||
-      typeof user.password_hash !==
-        "string"
-    ) {
-
-      console.error(
-        "LOGIN ERROR: User has no valid password hash"
-      );
-
-      return res.status(401).json({
-        success: false,
-        message:
-          "Invalid credentials",
-      });
-    }
-
-
-    console.log(
-      "Checking password..."
-    );
-
-
-    let passwordMatches = false;
-
-    try {
-
-      passwordMatches =
-        await bcrypt.compare(
-          password,
-          user.password_hash
-        );
-
-    } catch (bcryptError) {
-
-      console.error(
-        "BCRYPT ERROR:",
-        bcryptError
-      );
-
-      passwordMatches = false;
-    }
-
-
-    if (!passwordMatches) {
-
-      console.log(
-        "LOGIN FAILED: Invalid password"
-      );
-
-
-      /*
-       * Audit logging must not prevent
-       * the login response.
-       */
       try {
-
         await auditLog(
           null,
           "LOGIN_FAILED",
           "users",
           null,
-          {
-            email: cleanEmail,
-          },
+          { email: cleanEmail },
           clientIp(req)
         );
-
       } catch (auditError) {
-
         console.error(
           "Failed login audit error:",
           auditError
         );
       }
 
-
       return res.status(401).json({
         success: false,
-        message:
-          "Invalid credentials",
+        message: "Invalid credentials",
       });
     }
 
-
     /*
     |--------------------------------------------------------------------------
-    | ACCOUNT STATUS
+    | STEP 2 - Check password
     |--------------------------------------------------------------------------
     */
 
-    if (!user.is_active) {
+    console.log("STEP 2: Checking password...");
 
+    if (
+      !user.password_hash ||
+      typeof user.password_hash !== "string"
+    ) {
+      console.log(
+        "LOGIN FAILED: Invalid password hash"
+      );
+
+      return res.status(401).json({
+        success: false,
+        message: "Invalid credentials",
+      });
+    }
+
+    let passwordOk = false;
+
+    try {
+      passwordOk = await bcrypt.compare(
+        password,
+        user.password_hash
+      );
+    } catch (bcryptError) {
+      console.error(
+        "BCRYPT ERROR:",
+        bcryptError
+      );
+
+      passwordOk = false;
+    }
+
+    console.log("STEP 2 COMPLETE");
+    console.log("Password correct:", passwordOk);
+
+    if (!passwordOk) {
+      console.log("LOGIN FAILED: Invalid password");
+
+      try {
+        await auditLog(
+          null,
+          "LOGIN_FAILED",
+          "users",
+          null,
+          { email: cleanEmail },
+          clientIp(req)
+        );
+      } catch (auditError) {
+        console.error(
+          "Failed login audit error:",
+          auditError
+        );
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: "Invalid credentials",
+      });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | STEP 3 - Account status
+    |--------------------------------------------------------------------------
+    */
+
+    console.log(
+      "STEP 3: Checking account status..."
+    );
+
+    if (!user.is_active) {
       console.log(
         "LOGIN FAILED: Account inactive"
       );
 
       return res.status(403).json({
         success: false,
-        message:
-          "Account deactivated",
+        message: "Account deactivated",
       });
     }
 
-
     if (!user.is_approved) {
-
       console.log(
         "LOGIN FAILED: Account pending approval"
       );
@@ -649,17 +556,20 @@ export async function login(req, res) {
       });
     }
 
-
+    console.log("STEP 3 COMPLETE");
     console.log(
-      "Password correct and account approved."
+      "Account approved and active."
     );
-
 
     /*
     |--------------------------------------------------------------------------
-    | CREATE ACCESS TOKEN
+    | STEP 4 - Create access token
     |--------------------------------------------------------------------------
     */
+
+    console.log(
+      "STEP 4: Creating access token..."
+    );
 
     const payload = {
       id: user.id,
@@ -668,23 +578,20 @@ export async function login(req, res) {
       full_name: user.full_name,
     };
 
-
     const accessToken =
-      signAccessToken(
-        payload
-      );
+      signAccessToken(payload);
 
+    console.log("STEP 4 COMPLETE");
 
     /*
     |--------------------------------------------------------------------------
-    | CREATE REFRESH TOKEN
+    | STEP 5 - Create refresh token
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      "Creating refresh token..."
+      "STEP 5: Creating refresh token..."
     );
-
 
     const refreshToken =
       signRefreshToken({
@@ -692,33 +599,15 @@ export async function login(req, res) {
         type: "refresh",
       });
 
-
     const tokenHash =
-      hashToken(
-        refreshToken
-      );
-
+      hashToken(refreshToken);
 
     const decoded =
-      verifyRefreshToken(
-        refreshToken
-      );
+      verifyRefreshToken(refreshToken);
 
-
-    const expMs =
-      decoded?.exp
-        ? decoded.exp * 1000
-        : Date.now() +
-          7 *
-            24 *
-            60 *
-            60 *
-            1000;
-
-
-    const expiresAt =
-      new Date(expMs);
-
+    const expiresAt = new Date(
+      decoded.exp * 1000
+    );
 
     if (
       Number.isNaN(
@@ -730,17 +619,17 @@ export async function login(req, res) {
       );
     }
 
+    console.log("STEP 5 COMPLETE");
 
     /*
     |--------------------------------------------------------------------------
-    | SAVE REFRESH TOKEN
+    | STEP 6 - Save refresh token
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      "Deleting old refresh tokens..."
+      "STEP 6: Deleting old refresh tokens..."
     );
-
 
     await pool.execute(
       `DELETE FROM refresh_tokens
@@ -748,11 +637,13 @@ export async function login(req, res) {
       [user.id]
     );
 
-
     console.log(
-      "Saving new refresh token..."
+      "STEP 6A COMPLETE"
     );
 
+    console.log(
+      "STEP 6B: Saving new refresh token..."
+    );
 
     await pool.execute(
       `INSERT INTO refresh_tokens
@@ -770,36 +661,23 @@ export async function login(req, res) {
       ]
     );
 
+    console.log(
+      "STEP 6 COMPLETE"
+    );
 
     /*
     |--------------------------------------------------------------------------
-    | REFRESH COOKIE
+    | STEP 7 - Set refresh cookie
     |--------------------------------------------------------------------------
-    |
-    | Frontend:
-    | https://hms-client-1.onrender.com
-    |
-    | Backend:
-    | https://hms-server-odkt.onrender.com
-    |
-    | Therefore production uses:
-    | secure: true
-    | sameSite: "none"
-    |
     */
 
-    const isProduction =
+    console.log(
+      "STEP 7: Setting refresh cookie..."
+    );
+
+    const production =
       process.env.NODE_ENV ===
       "production";
-
-
-    const maxAge =
-      7 *
-      24 *
-      60 *
-      60 *
-      1000;
-
 
     res.cookie(
       "refreshToken",
@@ -807,30 +685,42 @@ export async function login(req, res) {
       {
         httpOnly: true,
 
-        secure:
-          isProduction,
+        secure: production,
 
-        sameSite:
-          isProduction
-            ? "none"
-            : "lax",
+        sameSite: production
+          ? "none"
+          : "lax",
 
-        maxAge,
+        maxAge:
+          7 *
+          24 *
+          60 *
+          60 *
+          1000,
 
         path: "/api/auth",
-
       }
     );
 
+    console.log(
+      "STEP 7 COMPLETE"
+    );
 
     /*
     |--------------------------------------------------------------------------
-    | AUDIT LOGIN
+    | STEP 8 - Audit login
+    |--------------------------------------------------------------------------
+    |
+    | Audit logging is intentionally protected.
+    | A failed audit log must NOT prevent login.
     |--------------------------------------------------------------------------
     */
 
-    try {
+    console.log(
+      "STEP 8: Writing login audit..."
+    );
 
+    try {
       await auditLog(
         user.id,
         "LOGIN_SUCCESS",
@@ -840,51 +730,52 @@ export async function login(req, res) {
         clientIp(req)
       );
 
+      console.log(
+        "STEP 8 COMPLETE"
+      );
     } catch (auditError) {
-
-      /*
-       * Do NOT make a successful login
-       * fail because audit logging failed.
-       */
-
       console.error(
         "LOGIN AUDIT ERROR:",
         auditError
       );
-    }
 
+      console.log(
+        "Continuing login despite audit error."
+      );
+    }
 
     /*
     |--------------------------------------------------------------------------
-    | SUCCESS RESPONSE
+    | STEP 9 - Send response
     |--------------------------------------------------------------------------
     */
 
     console.log(
-      "LOGIN SUCCESS:",
-      user.email
+      "STEP 9: Sending login response..."
     );
 
+    const responseUser = {
+      id: user.id,
+      full_name: user.full_name,
+      email: user.email,
+      role: user.role,
+    };
+
+    console.log(
+      "LOGIN SUCCESS:",
+      responseUser.email
+    );
+
+    console.log(
+      "======================================"
+    );
 
     return res.status(200).json({
       success: true,
-
       accessToken,
-
-      user: {
-        id: user.id,
-        full_name:
-          user.full_name,
-        email:
-          user.email,
-        role:
-          user.role,
-      },
+      user: responseUser,
     });
-
-
-  } catch (e) {
-
+  } catch (error) {
     console.error(
       "======================================"
     );
@@ -893,22 +784,17 @@ export async function login(req, res) {
       "LOGIN SERVER ERROR"
     );
 
-    console.error(
-      e
-    );
+    console.error(error);
 
     console.error(
       "======================================"
     );
 
-
     try {
-
       const {
         status,
         message,
-      } = mapDbError(e);
-
+      } = mapDbError(error);
 
       return res
         .status(status || 500)
@@ -916,11 +802,9 @@ export async function login(req, res) {
           success: false,
           message:
             message ||
-            "Login failed",
+            "Login failed due to a server error",
         });
-
     } catch (mapError) {
-
       console.error(
         "mapDbError failed:",
         mapError
@@ -935,66 +819,47 @@ export async function login(req, res) {
   }
 }
 
-
 /*
 |--------------------------------------------------------------------------
-| REFRESH
+| REFRESH TOKEN
 |--------------------------------------------------------------------------
 */
 
-export async function refresh(
-  req,
-  res
-) {
-
+export async function refresh(req, res) {
   try {
-
     const token =
       req.cookies?.refreshToken;
 
-
     if (!token) {
-
       return res.status(401).json({
         success: false,
-        message:
-          "No refresh token",
+        message: "No refresh token",
       });
     }
-
 
     let decoded;
 
     try {
-
       decoded =
-        verifyRefreshToken(
-          token
-        );
-
+        verifyRefreshToken(token);
     } catch {
-
       return res.status(401).json({
         success: false,
         message:
           "Invalid refresh token",
       });
     }
-
 
     if (!decoded?.id) {
-
       return res.status(401).json({
         success: false,
         message:
           "Invalid refresh token",
       });
     }
-
 
     const tokenHash =
       hashToken(token);
-
 
     const [rows] =
       await pool.execute(
@@ -1014,60 +879,44 @@ export async function refresh(
         [tokenHash]
       );
 
-
-    const row =
-      rows[0];
-
+    const row = rows[0];
 
     if (
       !row ||
       !row.is_active ||
       !row.is_approved
     ) {
-
       return res.status(401).json({
         success: false,
-        message:
-          "Session invalid",
+        message: "Session invalid",
       });
     }
-
 
     const payload = {
       id: row.user_id,
       email: row.email,
       role: row.role,
-      full_name:
-        row.full_name,
+      full_name: row.full_name,
     };
 
-
     const accessToken =
-      signAccessToken(
-        payload
-      );
-
+      signAccessToken(payload);
 
     return res.status(200).json({
       success: true,
       accessToken,
       user: payload,
     });
-
-
   } catch (e) {
-
     console.error(
       "REFRESH ERROR:",
       e
     );
 
-
     const {
       status,
       message,
     } = mapDbError(e);
-
 
     return res
       .status(status || 500)
@@ -1080,36 +929,24 @@ export async function refresh(
   }
 }
 
-
 /*
 |--------------------------------------------------------------------------
 | LOGOUT
 |--------------------------------------------------------------------------
 */
 
-export async function logout(
-  req,
-  res
-) {
-
+export async function logout(req, res) {
   try {
-
     const token =
       req.cookies?.refreshToken;
 
-
     if (token) {
-
       try {
-
         const decoded =
-          verifyRefreshToken(
-            token
-          );
+          verifyRefreshToken(token);
 
         const tokenHash =
           hashToken(token);
-
 
         await pool.execute(
           `DELETE FROM refresh_tokens
@@ -1120,34 +957,29 @@ export async function logout(
             tokenHash,
           ]
         );
-
       } catch {
         // Ignore invalid/expired token
       }
     }
 
+    const production =
+      process.env.NODE_ENV ===
+      "production";
 
     res.clearCookie(
       "refreshToken",
       {
         httpOnly: true,
-        secure:
-          process.env.NODE_ENV ===
-          "production",
-        sameSite:
-          process.env.NODE_ENV ===
-          "production"
-            ? "none"
-            : "lax",
+        secure: production,
+        sameSite: production
+          ? "none"
+          : "lax",
         path: "/api/auth",
       }
     );
 
-
     if (req.user?.id) {
-
       try {
-
         await auditLog(
           req.user.id,
           "LOGOUT",
@@ -1156,9 +988,7 @@ export async function logout(
           null,
           clientIp(req)
         );
-
       } catch (auditError) {
-
         console.error(
           "Logout audit error:",
           auditError
@@ -1166,27 +996,20 @@ export async function logout(
       }
     }
 
-
     return res.json({
       success: true,
-      message:
-        "Logged out",
+      message: "Logged out",
     });
-
-
   } catch (e) {
-
     console.error(
       "LOGOUT ERROR:",
       e
     );
 
-
     const {
       status,
       message,
     } = mapDbError(e);
-
 
     return res
       .status(status || 500)
@@ -1199,7 +1022,6 @@ export async function logout(
   }
 }
 
-
 /*
 |--------------------------------------------------------------------------
 | RESET PASSWORD
@@ -1210,9 +1032,7 @@ export async function resetPasswordWithCode(
   req,
   res
 ) {
-
   try {
-
     const {
       email,
       code,
@@ -1220,14 +1040,12 @@ export async function resetPasswordWithCode(
       confirm_password,
     } = req.body || {};
 
-
     if (
       !email ||
       !code ||
       !new_password ||
       !confirm_password
     ) {
-
       return res.status(400).json({
         success: false,
         message:
@@ -1235,12 +1053,10 @@ export async function resetPasswordWithCode(
       });
     }
 
-
     if (
       new_password !==
       confirm_password
     ) {
-
       return res.status(400).json({
         success: false,
         message:
@@ -1248,11 +1064,9 @@ export async function resetPasswordWithCode(
       });
     }
 
-
     if (
       new_password.length < 8
     ) {
-
       return res.status(400).json({
         success: false,
         message:
@@ -1260,6 +1074,8 @@ export async function resetPasswordWithCode(
       });
     }
 
+    const cleanEmail =
+      email.trim().toLowerCase();
 
     const [users] =
       await pool.execute(
@@ -1269,21 +1085,15 @@ export async function resetPasswordWithCode(
           email
          FROM users
          WHERE email = ?
-           AND is_active = TRUE`,
-        [
-          email
-            .trim()
-            .toLowerCase(),
-        ]
+           AND is_active = TRUE
+         LIMIT 1`,
+        [cleanEmail]
       );
-
 
     const user =
       users[0];
 
-
     if (!user) {
-
       return res.status(400).json({
         success: false,
         message:
@@ -1291,17 +1101,13 @@ export async function resetPasswordWithCode(
       });
     }
 
-
     const codeHash =
       crypto
         .createHash("sha256")
         .update(
-          code
-            .trim()
-            .toUpperCase()
+          code.trim().toUpperCase()
         )
         .digest("hex");
-
 
     const [codes] =
       await pool.execute(
@@ -1318,9 +1124,7 @@ export async function resetPasswordWithCode(
         ]
       );
 
-
     if (!codes.length) {
-
       return res.status(400).json({
         success: false,
         message:
@@ -1328,13 +1132,11 @@ export async function resetPasswordWithCode(
       });
     }
 
-
     const newHash =
       await bcrypt.hash(
         new_password,
         SALT
       );
-
 
     await pool.execute(
       `UPDATE password_reset_codes
@@ -1342,7 +1144,6 @@ export async function resetPasswordWithCode(
        WHERE id = ?`,
       [codes[0].id]
     );
-
 
     await pool.execute(
       `UPDATE users
@@ -1354,16 +1155,13 @@ export async function resetPasswordWithCode(
       ]
     );
 
-
     await pool.execute(
       `DELETE FROM refresh_tokens
        WHERE user_id = ?`,
       [user.id]
     );
 
-
     try {
-
       await auditLog(
         user.id,
         "PASSWORD_RESET",
@@ -1372,50 +1170,38 @@ export async function resetPasswordWithCode(
         {},
         clientIp(req)
       );
-
     } catch (auditError) {
-
       console.error(
         "Password reset audit error:",
         auditError
       );
     }
 
-
     sendPasswordChangedEmail({
-      toEmail:
-        user.email,
-      fullName:
-        user.full_name,
-    }).catch(
-      (err) =>
-        console.error(
-          "[mailer] Failed to send password-changed email:",
-          err
-        )
-    );
-
+      toEmail: user.email,
+      fullName: user.full_name,
+    }).catch((err) => {
+      console.error(
+        "[mailer] Failed to send password-changed email:",
+        err
+      );
+    });
 
     return res.json({
       success: true,
       message:
         "Password changed successfully. You can now log in.",
     });
-
-
   } catch (e) {
-
     console.error(
       "RESET PASSWORD ERROR:",
       e
     );
 
-
     const {
       status,
       message,
     } = mapDbError(e);
-
 
     return res
       .status(status || 500)
@@ -1428,20 +1214,14 @@ export async function resetPasswordWithCode(
   }
 }
 
-
 /*
 |--------------------------------------------------------------------------
 | CURRENT USER
 |--------------------------------------------------------------------------
 */
 
-export async function me(
-  req,
-  res
-) {
-
+export async function me(req, res) {
   try {
-
     const [rows] =
       await pool.execute(
         `SELECT
@@ -1458,13 +1238,10 @@ export async function me(
         [req.user.id]
       );
 
-
     const user =
       rows[0];
 
-
     if (!user) {
-
       return res.status(404).json({
         success: false,
         message:
@@ -1472,26 +1249,20 @@ export async function me(
       });
     }
 
-
     return res.json({
       success: true,
       user,
     });
-
-
   } catch (e) {
-
     console.error(
       "ME ERROR:",
       e
     );
 
-
     const {
       status,
       message,
     } = mapDbError(e);
-
 
     return res
       .status(status || 500)
