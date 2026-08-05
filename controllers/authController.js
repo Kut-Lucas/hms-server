@@ -1,257 +1,1025 @@
-// import bcrypt from 'bcrypt';
-// import crypto from 'crypto';
-// import { pool } from '../db/pool.js';
-// import { auditLog } from '../utils/auditLog.js';
-// import { mapDbError } from '../utils/dbErrors.js';
-// import { signAccessToken, signRefreshToken, verifyRefreshToken, hashToken } from '../utils/jwt.js';
-// import { sendPasswordChangedEmail } from '../utils/mailer.js';
+// import bcrypt from "bcrypt";
+// import crypto from "crypto";
+
+// import { pool } from "../db/pool.js";
+// import { auditLog } from "../utils/auditLog.js";
+// import { mapDbError } from "../utils/dbErrors.js";
+
+// import {
+//   signAccessToken,
+//   signRefreshToken,
+//   verifyRefreshToken,
+//   hashToken,
+// } from "../utils/jwt.js";
+
+// import { sendPasswordChangedEmail } from "../utils/mailer.js";
 
 // const SALT = 10;
 
+// /*
+// |--------------------------------------------------------------------------
+// | CLIENT IP
+// |--------------------------------------------------------------------------
+// */
+
 // function clientIp(req) {
-//   return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null;
+//   return (
+//     req.headers["x-forwarded-for"]
+//       ?.split(",")[0]
+//       ?.trim() ||
+//     req.socket?.remoteAddress ||
+//     null
+//   );
 // }
+
+// /*
+// |--------------------------------------------------------------------------
+// | REGISTER
+// |--------------------------------------------------------------------------
+// */
 
 // export async function register(req, res) {
 //   try {
-//     const { full_name, email, password } = req.body;
+//     const { full_name, email, password } = req.body || {};
+
 //     if (!full_name || !email || !password) {
-//       return res.status(400).json({ success: false, message: 'Missing required fields' });
+//       return res.status(400).json({
+//         success: false,
+//         message: "Missing required fields",
+//       });
 //     }
+
 //     if (password.length < 8) {
-//       return res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
+//       return res.status(400).json({
+//         success: false,
+//         message: "Password must be at least 8 characters",
+//       });
 //     }
+
+//     const cleanName = full_name.trim();
+//     const cleanEmail = email.trim().toLowerCase();
+
 //     const hash = await bcrypt.hash(password, SALT);
+
 //     await pool.execute(
-//       `INSERT INTO users (full_name, email, password_hash, role, is_approved, is_active)
-//        VALUES (?, ?, ?, 'receptionist', FALSE, TRUE)`,
-//       [full_name.trim(), email.trim().toLowerCase(), hash]
+//       `INSERT INTO users
+//         (
+//           full_name,
+//           email,
+//           password_hash,
+//           role,
+//           is_approved,
+//           is_active
+//         )
+//        VALUES
+//         (?, ?, ?, 'receptionist', FALSE, TRUE)`,
+//       [cleanName, cleanEmail, hash]
 //     );
-//     await auditLog(null, 'USER_REGISTER', 'users', null, { email }, clientIp(req));
+
+//     try {
+//       await auditLog(
+//         null,
+//         "USER_REGISTER",
+//         "users",
+//         null,
+//         { email: cleanEmail },
+//         clientIp(req)
+//       );
+//     } catch (auditError) {
+//       console.error(
+//         "Registration audit log failed:",
+//         auditError
+//       );
+//     }
+
 //     return res.status(201).json({
 //       success: true,
-//       message: 'Registration successful. Pending admin approval before you can log in.',
+//       message:
+//         "Registration successful. Pending admin approval before you can log in.",
 //     });
 //   } catch (e) {
-//     if (e.code === 'ER_DUP_ENTRY') {
-//       return res.status(400).json({ success: false, message: 'Email already registered' });
+//     console.error("REGISTER ERROR:", e);
+
+//     if (e.code === "ER_DUP_ENTRY") {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Email already registered",
+//       });
 //     }
-//     console.error(e);
+
 //     const { status, message } = mapDbError(e);
-//     return res.status(status).json({ success: false, message });
+
+//     return res.status(status || 500).json({
+//       success: false,
+//       message: message || "Registration failed",
+//     });
 //   }
 // }
 
+// /*
+// |--------------------------------------------------------------------------
+// | LOGIN
+// |--------------------------------------------------------------------------
+// */
+
 // export async function login(req, res) {
+//   console.log("======================================");
+//   console.log("LOGIN STARTED");
+//   console.log("Origin:", req.headers.origin);
+//   console.log("======================================");
+
 //   try {
-//     const { email, password } = req.body;
+//     const { email, password } = req.body || {};
+
+//     console.log("Email received:", email);
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | Validate input
+//     |--------------------------------------------------------------------------
+//     */
+
 //     if (!email || !password) {
-//       return res.status(400).json({ success: false, message: 'Email and password required' });
+//       console.log("LOGIN ERROR: Missing email or password");
+
+//       return res.status(400).json({
+//         success: false,
+//         message: "Email and password required",
+//       });
 //     }
+
+//     const cleanEmail = email.trim().toLowerCase();
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 1 - Find user
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log("STEP 1: Searching for user...");
+
 //     const [rows] = await pool.execute(
-//       `SELECT id, full_name, email, password_hash, role, is_approved, is_active FROM users WHERE email = ?`,
-//       [email.trim().toLowerCase()]
+//       `SELECT
+//         id,
+//         full_name,
+//         email,
+//         password_hash,
+//         role,
+//         is_approved,
+//         is_active
+//        FROM users
+//        WHERE email = ?
+//        LIMIT 1`,
+//       [cleanEmail]
 //     );
+
+//     console.log("STEP 1 COMPLETE");
+//     console.log("User found:", rows.length > 0);
+
 //     const user = rows[0];
-//     const hashOk =
-//       user?.password_hash &&
-//       typeof user.password_hash === 'string' &&
-//       (await bcrypt.compare(password, user.password_hash).catch(() => false));
-//     if (!user || !hashOk) {
-//       await auditLog(null, 'LOGIN_FAILED', 'users', null, { email }, clientIp(req));
-//       return res.status(401).json({ success: false, message: 'Invalid credentials' });
+
+//     if (!user) {
+//       console.log("LOGIN FAILED: User not found");
+
+//       try {
+//         await auditLog(
+//           null,
+//           "LOGIN_FAILED",
+//           "users",
+//           null,
+//           { email: cleanEmail },
+//           clientIp(req)
+//         );
+//       } catch (auditError) {
+//         console.error(
+//           "Failed login audit error:",
+//           auditError
+//         );
+//       }
+
+//       return res.status(401).json({
+//         success: false,
+//         message: "Invalid credentials",
+//       });
 //     }
-//     if (!user.is_active) {
-//       return res.status(403).json({ success: false, message: 'Account deactivated' });
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 2 - Check password
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log("STEP 2: Checking password...");
+
+//     if (
+//       !user.password_hash ||
+//       typeof user.password_hash !== "string"
+//     ) {
+//       console.log(
+//         "LOGIN FAILED: Invalid password hash"
+//       );
+
+//       return res.status(401).json({
+//         success: false,
+//         message: "Invalid credentials",
+//       });
 //     }
-//     if (!user.is_approved) {
-//       return res.status(403).json({ success: false, message: 'Account pending admin approval' });
+
+//     let passwordOk = false;
+
+//     try {
+//       passwordOk = await bcrypt.compare(
+//         password,
+//         user.password_hash
+//       );
+//     } catch (bcryptError) {
+//       console.error(
+//         "BCRYPT ERROR:",
+//         bcryptError
+//       );
+
+//       passwordOk = false;
 //     }
-//     const payload = { id: user.id, email: user.email, role: user.role, full_name: user.full_name };
-//     const accessToken = signAccessToken(payload);
-//     const refreshToken = signRefreshToken({ id: user.id, type: 'refresh' });
-//     const tokenHash = hashToken(refreshToken);
-//     const decoded = verifyRefreshToken(refreshToken);
-//     const expMs = decoded?.exp ? decoded.exp * 1000 : Date.now() + 7 * 24 * 60 * 60 * 1000;
-//     const expiresAt = new Date(expMs);
-//     if (Number.isNaN(expiresAt.getTime())) {
-//       throw new Error('Invalid refresh token expiry');
+
+//     console.log("STEP 2 COMPLETE");
+//     console.log("Password correct:", passwordOk);
+
+//     if (!passwordOk) {
+//       console.log("LOGIN FAILED: Invalid password");
+
+//       try {
+//         await auditLog(
+//           null,
+//           "LOGIN_FAILED",
+//           "users",
+//           null,
+//           { email: cleanEmail },
+//           clientIp(req)
+//         );
+//       } catch (auditError) {
+//         console.error(
+//           "Failed login audit error:",
+//           auditError
+//         );
+//       }
+
+//       return res.status(401).json({
+//         success: false,
+//         message: "Invalid credentials",
+//       });
 //     }
-//     await pool.execute(`DELETE FROM refresh_tokens WHERE user_id = ?`, [user.id]);
-//     await pool.execute(
-//       `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)`,
-//       [user.id, tokenHash, expiresAt]
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 3 - Account status
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log(
+//       "STEP 3: Checking account status..."
 //     );
-//     const maxAge = 7 * 24 * 60 * 60 * 1000;
-//     res.cookie('refreshToken', refreshToken, {
-//       httpOnly: true,
-//       secure: process.env.NODE_ENV === 'production',
-//       sameSite: 'lax',
-//       maxAge,
-//       path: '/api/auth',
-//     });
-//     await auditLog(user.id, 'LOGIN_SUCCESS', 'users', user.id, null, clientIp(req));
-//     return res.json({
+
+//     if (!user.is_active) {
+//       console.log(
+//         "LOGIN FAILED: Account inactive"
+//       );
+
+//       return res.status(403).json({
+//         success: false,
+//         message: "Account deactivated",
+//       });
+//     }
+
+//     if (!user.is_approved) {
+//       console.log(
+//         "LOGIN FAILED: Account pending approval"
+//       );
+
+//       return res.status(403).json({
+//         success: false,
+//         message:
+//           "Account pending admin approval",
+//       });
+//     }
+
+//     console.log("STEP 3 COMPLETE");
+//     console.log(
+//       "Account approved and active."
+//     );
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 4 - Create access token
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log(
+//       "STEP 4: Creating access token..."
+//     );
+
+//     const payload = {
+//       id: user.id,
+//       email: user.email,
+//       role: user.role,
+//       full_name: user.full_name,
+//     };
+
+//     const accessToken =
+//       signAccessToken(payload);
+
+//     console.log("STEP 4 COMPLETE");
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 5 - Create refresh token
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log(
+//       "STEP 5: Creating refresh token..."
+//     );
+
+//     const refreshToken =
+//       signRefreshToken({
+//         id: user.id,
+//         type: "refresh",
+//       });
+
+//     const tokenHash =
+//       hashToken(refreshToken);
+
+//     const decoded =
+//       verifyRefreshToken(refreshToken);
+
+//     const expiresAt = new Date(
+//       decoded.exp * 1000
+//     );
+
+//     if (
+//       Number.isNaN(
+//         expiresAt.getTime()
+//       )
+//     ) {
+//       throw new Error(
+//         "Invalid refresh token expiry"
+//       );
+//     }
+
+//     console.log("STEP 5 COMPLETE");
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 6 - Save refresh token
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log(
+//       "STEP 6: Deleting old refresh tokens..."
+//     );
+
+//     await pool.execute(
+//       `DELETE FROM refresh_tokens
+//        WHERE user_id = ?`,
+//       [user.id]
+//     );
+
+//     console.log(
+//       "STEP 6A COMPLETE"
+//     );
+
+//     console.log(
+//       "STEP 6B: Saving new refresh token..."
+//     );
+
+//     await pool.execute(
+//       `INSERT INTO refresh_tokens
+//         (
+//           user_id,
+//           token_hash,
+//           expires_at
+//         )
+//        VALUES
+//         (?, ?, ?)`,
+//       [
+//         user.id,
+//         tokenHash,
+//         expiresAt,
+//       ]
+//     );
+
+//     console.log(
+//       "STEP 6 COMPLETE"
+//     );
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 7 - Set refresh cookie
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log(
+//       "STEP 7: Setting refresh cookie..."
+//     );
+
+//     const production =
+//       process.env.NODE_ENV ===
+//       "production";
+
+//     res.cookie(
+//       "refreshToken",
+//       refreshToken,
+//       {
+//         httpOnly: true,
+
+//         secure: production,
+
+//         sameSite: production
+//           ? "none"
+//           : "lax",
+
+//         maxAge:
+//           7 *
+//           24 *
+//           60 *
+//           60 *
+//           1000,
+
+//         path: "/api/auth",
+//       }
+//     );
+
+//     console.log(
+//       "STEP 7 COMPLETE"
+//     );
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 8 - Audit login
+//     |--------------------------------------------------------------------------
+//     |
+//     | Audit logging is intentionally protected.
+//     | A failed audit log must NOT prevent login.
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log(
+//       "STEP 8: Writing login audit..."
+//     );
+
+//     try {
+//       await auditLog(
+//         user.id,
+//         "LOGIN_SUCCESS",
+//         "users",
+//         user.id,
+//         null,
+//         clientIp(req)
+//       );
+
+//       console.log(
+//         "STEP 8 COMPLETE"
+//       );
+//     } catch (auditError) {
+//       console.error(
+//         "LOGIN AUDIT ERROR:",
+//         auditError
+//       );
+
+//       console.log(
+//         "Continuing login despite audit error."
+//       );
+//     }
+
+//     /*
+//     |--------------------------------------------------------------------------
+//     | STEP 9 - Send response
+//     |--------------------------------------------------------------------------
+//     */
+
+//     console.log(
+//       "STEP 9: Sending login response..."
+//     );
+
+//     const responseUser = {
+//       id: user.id,
+//       full_name: user.full_name,
+//       email: user.email,
+//       role: user.role,
+//     };
+
+//     console.log(
+//       "LOGIN SUCCESS:",
+//       responseUser.email
+//     );
+
+//     console.log(
+//       "======================================"
+//     );
+
+//     return res.status(200).json({
 //       success: true,
 //       accessToken,
-//       user: { id: user.id, full_name: user.full_name, email: user.email, role: user.role },
+//       user: responseUser,
 //     });
-//   } catch (e) {
-//     console.error('login error', e);
-//     const { status, message } = mapDbError(e);
-//     return res.status(status).json({ success: false, message });
+//   } catch (error) {
+//     console.error(
+//       "======================================"
+//     );
+
+//     console.error(
+//       "LOGIN SERVER ERROR"
+//     );
+
+//     console.error(error);
+
+//     console.error(
+//       "======================================"
+//     );
+
+//     try {
+//       const {
+//         status,
+//         message,
+//       } = mapDbError(error);
+
+//       return res
+//         .status(status || 500)
+//         .json({
+//           success: false,
+//           message:
+//             message ||
+//             "Login failed due to a server error",
+//         });
+//     } catch (mapError) {
+//       console.error(
+//         "mapDbError failed:",
+//         mapError
+//       );
+
+//       return res.status(500).json({
+//         success: false,
+//         message:
+//           "Login failed due to a server error",
+//       });
+//     }
 //   }
 // }
+
+// /*
+// |--------------------------------------------------------------------------
+// | REFRESH TOKEN
+// |--------------------------------------------------------------------------
+// */
 
 // export async function refresh(req, res) {
 //   try {
-//     const token = req.cookies?.refreshToken;
+//     const token =
+//       req.cookies?.refreshToken;
+
 //     if (!token) {
-//       return res.status(401).json({ success: false, message: 'No refresh token' });
+//       return res.status(401).json({
+//         success: false,
+//         message: "No refresh token",
+//       });
 //     }
+
 //     let decoded;
+
 //     try {
-//       decoded = verifyRefreshToken(token);
+//       decoded =
+//         verifyRefreshToken(token);
 //     } catch {
-//       return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+//       return res.status(401).json({
+//         success: false,
+//         message:
+//           "Invalid refresh token",
+//       });
 //     }
+
 //     if (!decoded?.id) {
-//       return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+//       return res.status(401).json({
+//         success: false,
+//         message:
+//           "Invalid refresh token",
+//       });
 //     }
-//     const tokenHash = hashToken(token);
-//     const [rows] = await pool.execute(
-//       `SELECT rt.user_id, u.email, u.full_name, u.role, u.is_approved, u.is_active
-//        FROM refresh_tokens rt
-//        JOIN users u ON u.id = rt.user_id
-//        WHERE rt.token_hash = ? AND rt.expires_at > NOW()`,
-//       [tokenHash]
-//     );
+
+//     const tokenHash =
+//       hashToken(token);
+
+//     const [rows] =
+//       await pool.execute(
+//         `SELECT
+//           rt.user_id,
+//           u.email,
+//           u.full_name,
+//           u.role,
+//           u.is_approved,
+//           u.is_active
+//          FROM refresh_tokens rt
+//          JOIN users u
+//            ON u.id = rt.user_id
+//          WHERE rt.token_hash = ?
+//            AND rt.expires_at > NOW()
+//          LIMIT 1`,
+//         [tokenHash]
+//       );
+
 //     const row = rows[0];
-//     if (!row || !row.is_active || !row.is_approved) {
-//       return res.status(401).json({ success: false, message: 'Session invalid' });
+
+//     if (
+//       !row ||
+//       !row.is_active ||
+//       !row.is_approved
+//     ) {
+//       return res.status(401).json({
+//         success: false,
+//         message: "Session invalid",
+//       });
 //     }
+
 //     const payload = {
 //       id: row.user_id,
 //       email: row.email,
 //       role: row.role,
 //       full_name: row.full_name,
 //     };
-//     const accessToken = signAccessToken(payload);
-//     return res.json({ success: true, accessToken, user: payload });
+
+//     const accessToken =
+//       signAccessToken(payload);
+
+//     return res.status(200).json({
+//       success: true,
+//       accessToken,
+//       user: payload,
+//     });
 //   } catch (e) {
-//     console.error('refresh error', e);
-//     const { status, message } = mapDbError(e);
-//     return res.status(status).json({ success: false, message });
+//     console.error(
+//       "REFRESH ERROR:",
+//       e
+//     );
+
+//     const {
+//       status,
+//       message,
+//     } = mapDbError(e);
+
+//     return res
+//       .status(status || 500)
+//       .json({
+//         success: false,
+//         message:
+//           message ||
+//           "Refresh failed",
+//       });
 //   }
 // }
+
+// /*
+// |--------------------------------------------------------------------------
+// | LOGOUT
+// |--------------------------------------------------------------------------
+// */
 
 // export async function logout(req, res) {
 //   try {
-//     const token = req.cookies?.refreshToken;
+//     const token =
+//       req.cookies?.refreshToken;
+
 //     if (token) {
 //       try {
-//         const decoded = verifyRefreshToken(token);
-//         const tokenHash = hashToken(token);
-//         await pool.execute(`DELETE FROM refresh_tokens WHERE user_id = ? AND token_hash = ?`, [
-//           decoded.id,
-//           tokenHash,
-//         ]);
+//         const decoded =
+//           verifyRefreshToken(token);
+
+//         const tokenHash =
+//           hashToken(token);
+
+//         await pool.execute(
+//           `DELETE FROM refresh_tokens
+//            WHERE user_id = ?
+//              AND token_hash = ?`,
+//           [
+//             decoded.id,
+//             tokenHash,
+//           ]
+//         );
 //       } catch {
-//         /* ignore */
+//         // Ignore invalid/expired token
 //       }
 //     }
-//     res.clearCookie('refreshToken', { path: '/api/auth' });
+
+//     const production =
+//       process.env.NODE_ENV ===
+//       "production";
+
+//     res.clearCookie(
+//       "refreshToken",
+//       {
+//         httpOnly: true,
+//         secure: production,
+//         sameSite: production
+//           ? "none"
+//           : "lax",
+//         path: "/api/auth",
+//       }
+//     );
+
 //     if (req.user?.id) {
-//       await auditLog(req.user.id, 'LOGOUT', 'users', req.user.id, null, clientIp(req));
+//       try {
+//         await auditLog(
+//           req.user.id,
+//           "LOGOUT",
+//           "users",
+//           req.user.id,
+//           null,
+//           clientIp(req)
+//         );
+//       } catch (auditError) {
+//         console.error(
+//           "Logout audit error:",
+//           auditError
+//         );
+//       }
 //     }
-//     return res.json({ success: true, message: 'Logged out' });
+
+//     return res.json({
+//       success: true,
+//       message: "Logged out",
+//     });
 //   } catch (e) {
-//     console.error(e);
-//     const { status, message } = mapDbError(e);
-//     return res.status(status).json({ success: false, message });
+//     console.error(
+//       "LOGOUT ERROR:",
+//       e
+//     );
+
+//     const {
+//       status,
+//       message,
+//     } = mapDbError(e);
+
+//     return res
+//       .status(status || 500)
+//       .json({
+//         success: false,
+//         message:
+//           message ||
+//           "Logout failed",
+//       });
 //   }
 // }
 
-// /**
-//  * POST /auth/reset-password
-//  * Body: { email, code, new_password, confirm_password }
-//  * Uses the admin-generated one-time code to reset the password.
-//  */
-// export async function resetPasswordWithCode(req, res) {
+// /*
+// |--------------------------------------------------------------------------
+// | RESET PASSWORD
+// |--------------------------------------------------------------------------
+// */
+
+// export async function resetPasswordWithCode(
+//   req,
+//   res
+// ) {
 //   try {
-//     const { email, code, new_password, confirm_password } = req.body;
-//     if (!email || !code || !new_password || !confirm_password) {
-//       return res.status(400).json({ success: false, message: 'All fields are required' });
-//     }
-//     if (new_password !== confirm_password) {
-//       return res.status(400).json({ success: false, message: 'Passwords do not match' });
-//     }
-//     if (new_password.length < 8) {
-//       return res.status(400).json({ success: false, message: 'Password must be at least 8 characters' });
+//     const {
+//       email,
+//       code,
+//       new_password,
+//       confirm_password,
+//     } = req.body || {};
+
+//     if (
+//       !email ||
+//       !code ||
+//       !new_password ||
+//       !confirm_password
+//     ) {
+//       return res.status(400).json({
+//         success: false,
+//         message:
+//           "All fields are required",
+//       });
 //     }
 
-//     const [users] = await pool.execute(
-//       `SELECT id, full_name, email FROM users WHERE email = ? AND is_active = TRUE`,
-//       [email.trim().toLowerCase()]
-//     );
-//     const user = users[0];
+//     if (
+//       new_password !==
+//       confirm_password
+//     ) {
+//       return res.status(400).json({
+//         success: false,
+//         message:
+//           "Passwords do not match",
+//       });
+//     }
+
+//     if (
+//       new_password.length < 8
+//     ) {
+//       return res.status(400).json({
+//         success: false,
+//         message:
+//           "Password must be at least 8 characters",
+//       });
+//     }
+
+//     const cleanEmail =
+//       email.trim().toLowerCase();
+
+//     const [users] =
+//       await pool.execute(
+//         `SELECT
+//           id,
+//           full_name,
+//           email
+//          FROM users
+//          WHERE email = ?
+//            AND is_active = TRUE
+//          LIMIT 1`,
+//         [cleanEmail]
+//       );
+
+//     const user =
+//       users[0];
+
 //     if (!user) {
-//       // Generic message to avoid user enumeration
-//       return res.status(400).json({ success: false, message: 'Invalid email or code' });
+//       return res.status(400).json({
+//         success: false,
+//         message:
+//           "Invalid email or code",
+//       });
 //     }
 
-//     const codeHash = crypto.createHash('sha256').update(code.trim().toUpperCase()).digest('hex');
-//     const [codes] = await pool.execute(
-//       `SELECT id FROM password_reset_codes
-//        WHERE user_id = ? AND code_hash = ? AND expires_at > NOW() AND used = 0
-//        LIMIT 1`,
-//       [user.id, codeHash]
-//     );
+//     const codeHash =
+//       crypto
+//         .createHash("sha256")
+//         .update(
+//           code.trim().toUpperCase()
+//         )
+//         .digest("hex");
+
+//     const [codes] =
+//       await pool.execute(
+//         `SELECT id
+//          FROM password_reset_codes
+//          WHERE user_id = ?
+//            AND code_hash = ?
+//            AND expires_at > NOW()
+//            AND used = 0
+//          LIMIT 1`,
+//         [
+//           user.id,
+//           codeHash,
+//         ]
+//       );
+
 //     if (!codes.length) {
-//       return res.status(400).json({ success: false, message: 'Invalid or expired code' });
+//       return res.status(400).json({
+//         success: false,
+//         message:
+//           "Invalid or expired code",
+//       });
 //     }
 
-//     // Mark code used and update password
-//     const newHash = await bcrypt.hash(new_password, SALT);
-//     await pool.execute(`UPDATE password_reset_codes SET used = 1 WHERE id = ?`, [codes[0].id]);
-//     await pool.execute(`UPDATE users SET password_hash = ? WHERE id = ?`, [newHash, user.id]);
-//     // Invalidate all refresh tokens so old sessions can't persist
-//     await pool.execute(`DELETE FROM refresh_tokens WHERE user_id = ?`, [user.id]);
+//     const newHash =
+//       await bcrypt.hash(
+//         new_password,
+//         SALT
+//       );
 
-//     await auditLog(user.id, 'PASSWORD_RESET', 'users', user.id, {}, clientIp(req));
-
-//     // Fire-and-forget email notification
-//     sendPasswordChangedEmail({ toEmail: user.email, fullName: user.full_name }).catch((err) =>
-//       console.error('[mailer] Failed to send password-changed email:', err)
+//     await pool.execute(
+//       `UPDATE password_reset_codes
+//        SET used = 1
+//        WHERE id = ?`,
+//       [codes[0].id]
 //     );
 
-//     return res.json({ success: true, message: 'Password changed successfully. You can now log in.' });
+//     await pool.execute(
+//       `UPDATE users
+//        SET password_hash = ?
+//        WHERE id = ?`,
+//       [
+//         newHash,
+//         user.id,
+//       ]
+//     );
+
+//     await pool.execute(
+//       `DELETE FROM refresh_tokens
+//        WHERE user_id = ?`,
+//       [user.id]
+//     );
+
+//     try {
+//       await auditLog(
+//         user.id,
+//         "PASSWORD_RESET",
+//         "users",
+//         user.id,
+//         {},
+//         clientIp(req)
+//       );
+//     } catch (auditError) {
+//       console.error(
+//         "Password reset audit error:",
+//         auditError
+//       );
+//     }
+
+//     sendPasswordChangedEmail({
+//       toEmail: user.email,
+//       fullName: user.full_name,
+//     }).catch((err) => {
+//       console.error(
+//         "[mailer] Failed to send password-changed email:",
+//         err
+//       );
+//     });
+
+//     return res.json({
+//       success: true,
+//       message:
+//         "Password changed successfully. You can now log in.",
+//     });
 //   } catch (e) {
-//     console.error('resetPasswordWithCode error', e);
-//     const { status, message } = mapDbError(e);
-//     return res.status(status).json({ success: false, message });
+//     console.error(
+//       "RESET PASSWORD ERROR:",
+//       e
+//     );
+
+//     const {
+//       status,
+//       message,
+//     } = mapDbError(e);
+
+//     return res
+//       .status(status || 500)
+//       .json({
+//         success: false,
+//         message:
+//           message ||
+//           "Password reset failed",
+//       });
 //   }
 // }
+
+// /*
+// |--------------------------------------------------------------------------
+// | CURRENT USER
+// |--------------------------------------------------------------------------
+// */
 
 // export async function me(req, res) {
 //   try {
-//     const [rows] = await pool.execute(
-//       `SELECT id, full_name, email, role, is_approved, is_active, created_at FROM users WHERE id = ?`,
-//       [req.user.id]
-//     );
-//     const user = rows[0];
+//     const [rows] =
+//       await pool.execute(
+//         `SELECT
+//           id,
+//           full_name,
+//           email,
+//           role,
+//           is_approved,
+//           is_active,
+//           created_at
+//          FROM users
+//          WHERE id = ?
+//          LIMIT 1`,
+//         [req.user.id]
+//       );
+
+//     const user =
+//       rows[0];
+
 //     if (!user) {
-//       return res.status(404).json({ success: false, message: 'User not found' });
+//       return res.status(404).json({
+//         success: false,
+//         message:
+//           "User not found",
+//       });
 //     }
-//     return res.json({ success: true, user });
+
+//     return res.json({
+//       success: true,
+//       user,
+//     });
 //   } catch (e) {
-//     console.error(e);
-//     const { status, message } = mapDbError(e);
-//     return res.status(status).json({ success: false, message });
+//     console.error(
+//       "ME ERROR:",
+//       e
+//     );
+
+//     const {
+//       status,
+//       message,
+//     } = mapDbError(e);
+
+//     return res
+//       .status(status || 500)
+//       .json({
+//         success: false,
+//         message:
+//           message ||
+//           "Unable to load user",
+//       });
 //   }
 // }
-
-
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 
@@ -278,9 +1046,7 @@ const SALT = 10;
 
 function clientIp(req) {
   return (
-    req.headers["x-forwarded-for"]
-      ?.split(",")[0]
-      ?.trim() ||
+    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
     req.socket?.remoteAddress ||
     null
   );
@@ -327,7 +1093,7 @@ export async function register(req, res) {
         )
        VALUES
         (?, ?, ?, 'receptionist', FALSE, TRUE)`,
-      [cleanName, cleanEmail, hash]
+      [cleanName, cleanEmail, hash],
     );
 
     try {
@@ -337,13 +1103,10 @@ export async function register(req, res) {
         "users",
         null,
         { email: cleanEmail },
-        clientIp(req)
+        clientIp(req),
       );
     } catch (auditError) {
-      console.error(
-        "Registration audit log failed:",
-        auditError
-      );
+      console.error("Registration audit log failed:", auditError);
     }
 
     return res.status(201).json({
@@ -372,7 +1135,7 @@ export async function register(req, res) {
 
 /*
 |--------------------------------------------------------------------------
-| LOGIN
+| LOGIN – UPDATED WITH QUERY TIMEOUT
 |--------------------------------------------------------------------------
 */
 
@@ -406,13 +1169,13 @@ export async function login(req, res) {
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 1 - Find user
+    | STEP 1 - Find user with timeout protection
     |--------------------------------------------------------------------------
     */
 
     console.log("STEP 1: Searching for user...");
 
-    const [rows] = await pool.execute(
+    const queryPromise = pool.execute(
       `SELECT
         id,
         full_name,
@@ -424,11 +1187,27 @@ export async function login(req, res) {
        FROM users
        WHERE email = ?
        LIMIT 1`,
-      [cleanEmail]
+      [cleanEmail],
     );
 
-    console.log("STEP 1 COMPLETE");
-    console.log("User found:", rows.length > 0);
+    // Timeout after 10 seconds – adjust as needed
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("Database query timeout after 10s")),
+        10000,
+      ),
+    );
+
+    let rows;
+    try {
+      const result = await Promise.race([queryPromise, timeoutPromise]);
+      rows = result[0];
+    } catch (queryError) {
+      console.error("DATABASE QUERY FAILED:", queryError.message);
+      throw queryError; // will be caught by outer catch
+    }
+
+    console.log("STEP 1 COMPLETE – rows length:", rows.length);
 
     const user = rows[0];
 
@@ -442,13 +1221,10 @@ export async function login(req, res) {
           "users",
           null,
           { email: cleanEmail },
-          clientIp(req)
+          clientIp(req),
         );
       } catch (auditError) {
-        console.error(
-          "Failed login audit error:",
-          auditError
-        );
+        console.error("Failed login audit error:", auditError);
       }
 
       return res.status(401).json({
@@ -465,13 +1241,8 @@ export async function login(req, res) {
 
     console.log("STEP 2: Checking password...");
 
-    if (
-      !user.password_hash ||
-      typeof user.password_hash !== "string"
-    ) {
-      console.log(
-        "LOGIN FAILED: Invalid password hash"
-      );
+    if (!user.password_hash || typeof user.password_hash !== "string") {
+      console.log("LOGIN FAILED: Invalid password hash");
 
       return res.status(401).json({
         success: false,
@@ -482,15 +1253,9 @@ export async function login(req, res) {
     let passwordOk = false;
 
     try {
-      passwordOk = await bcrypt.compare(
-        password,
-        user.password_hash
-      );
+      passwordOk = await bcrypt.compare(password, user.password_hash);
     } catch (bcryptError) {
-      console.error(
-        "BCRYPT ERROR:",
-        bcryptError
-      );
+      console.error("BCRYPT ERROR:", bcryptError);
 
       passwordOk = false;
     }
@@ -508,13 +1273,10 @@ export async function login(req, res) {
           "users",
           null,
           { email: cleanEmail },
-          clientIp(req)
+          clientIp(req),
         );
       } catch (auditError) {
-        console.error(
-          "Failed login audit error:",
-          auditError
-        );
+        console.error("Failed login audit error:", auditError);
       }
 
       return res.status(401).json({
@@ -529,14 +1291,10 @@ export async function login(req, res) {
     |--------------------------------------------------------------------------
     */
 
-    console.log(
-      "STEP 3: Checking account status..."
-    );
+    console.log("STEP 3: Checking account status...");
 
     if (!user.is_active) {
-      console.log(
-        "LOGIN FAILED: Account inactive"
-      );
+      console.log("LOGIN FAILED: Account inactive");
 
       return res.status(403).json({
         success: false,
@@ -545,21 +1303,16 @@ export async function login(req, res) {
     }
 
     if (!user.is_approved) {
-      console.log(
-        "LOGIN FAILED: Account pending approval"
-      );
+      console.log("LOGIN FAILED: Account pending approval");
 
       return res.status(403).json({
         success: false,
-        message:
-          "Account pending admin approval",
+        message: "Account pending admin approval",
       });
     }
 
     console.log("STEP 3 COMPLETE");
-    console.log(
-      "Account approved and active."
-    );
+    console.log("Account approved and active.");
 
     /*
     |--------------------------------------------------------------------------
@@ -567,9 +1320,7 @@ export async function login(req, res) {
     |--------------------------------------------------------------------------
     */
 
-    console.log(
-      "STEP 4: Creating access token..."
-    );
+    console.log("STEP 4: Creating access token...");
 
     const payload = {
       id: user.id,
@@ -578,8 +1329,7 @@ export async function login(req, res) {
       full_name: user.full_name,
     };
 
-    const accessToken =
-      signAccessToken(payload);
+    const accessToken = signAccessToken(payload);
 
     console.log("STEP 4 COMPLETE");
 
@@ -589,34 +1339,21 @@ export async function login(req, res) {
     |--------------------------------------------------------------------------
     */
 
-    console.log(
-      "STEP 5: Creating refresh token..."
-    );
+    console.log("STEP 5: Creating refresh token...");
 
-    const refreshToken =
-      signRefreshToken({
-        id: user.id,
-        type: "refresh",
-      });
+    const refreshToken = signRefreshToken({
+      id: user.id,
+      type: "refresh",
+    });
 
-    const tokenHash =
-      hashToken(refreshToken);
+    const tokenHash = hashToken(refreshToken);
 
-    const decoded =
-      verifyRefreshToken(refreshToken);
+    const decoded = verifyRefreshToken(refreshToken);
 
-    const expiresAt = new Date(
-      decoded.exp * 1000
-    );
+    const expiresAt = new Date(decoded.exp * 1000);
 
-    if (
-      Number.isNaN(
-        expiresAt.getTime()
-      )
-    ) {
-      throw new Error(
-        "Invalid refresh token expiry"
-      );
+    if (Number.isNaN(expiresAt.getTime())) {
+      throw new Error("Invalid refresh token expiry");
     }
 
     console.log("STEP 5 COMPLETE");
@@ -627,23 +1364,17 @@ export async function login(req, res) {
     |--------------------------------------------------------------------------
     */
 
-    console.log(
-      "STEP 6: Deleting old refresh tokens..."
-    );
+    console.log("STEP 6: Deleting old refresh tokens...");
 
     await pool.execute(
       `DELETE FROM refresh_tokens
        WHERE user_id = ?`,
-      [user.id]
+      [user.id],
     );
 
-    console.log(
-      "STEP 6A COMPLETE"
-    );
+    console.log("STEP 6A COMPLETE");
 
-    console.log(
-      "STEP 6B: Saving new refresh token..."
-    );
+    console.log("STEP 6B: Saving new refresh token...");
 
     await pool.execute(
       `INSERT INTO refresh_tokens
@@ -654,16 +1385,10 @@ export async function login(req, res) {
         )
        VALUES
         (?, ?, ?)`,
-      [
-        user.id,
-        tokenHash,
-        expiresAt,
-      ]
+      [user.id, tokenHash, expiresAt],
     );
 
-    console.log(
-      "STEP 6 COMPLETE"
-    );
+    console.log("STEP 6 COMPLETE");
 
     /*
     |--------------------------------------------------------------------------
@@ -671,54 +1396,31 @@ export async function login(req, res) {
     |--------------------------------------------------------------------------
     */
 
-    console.log(
-      "STEP 7: Setting refresh cookie..."
-    );
+    console.log("STEP 7: Setting refresh cookie...");
 
-    const production =
-      process.env.NODE_ENV ===
-      "production";
+    const production = process.env.NODE_ENV === "production";
 
-    res.cookie(
-      "refreshToken",
-      refreshToken,
-      {
-        httpOnly: true,
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
 
-        secure: production,
+      secure: production,
 
-        sameSite: production
-          ? "none"
-          : "lax",
+      sameSite: production ? "none" : "lax",
 
-        maxAge:
-          7 *
-          24 *
-          60 *
-          60 *
-          1000,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
 
-        path: "/api/auth",
-      }
-    );
+      path: "/api/auth",
+    });
 
-    console.log(
-      "STEP 7 COMPLETE"
-    );
+    console.log("STEP 7 COMPLETE");
 
     /*
     |--------------------------------------------------------------------------
     | STEP 8 - Audit login
     |--------------------------------------------------------------------------
-    |
-    | Audit logging is intentionally protected.
-    | A failed audit log must NOT prevent login.
-    |--------------------------------------------------------------------------
     */
 
-    console.log(
-      "STEP 8: Writing login audit..."
-    );
+    console.log("STEP 8: Writing login audit...");
 
     try {
       await auditLog(
@@ -727,21 +1429,14 @@ export async function login(req, res) {
         "users",
         user.id,
         null,
-        clientIp(req)
+        clientIp(req),
       );
 
-      console.log(
-        "STEP 8 COMPLETE"
-      );
+      console.log("STEP 8 COMPLETE");
     } catch (auditError) {
-      console.error(
-        "LOGIN AUDIT ERROR:",
-        auditError
-      );
+      console.error("LOGIN AUDIT ERROR:", auditError);
 
-      console.log(
-        "Continuing login despite audit error."
-      );
+      console.log("Continuing login despite audit error.");
     }
 
     /*
@@ -750,9 +1445,7 @@ export async function login(req, res) {
     |--------------------------------------------------------------------------
     */
 
-    console.log(
-      "STEP 9: Sending login response..."
-    );
+    console.log("STEP 9: Sending login response...");
 
     const responseUser = {
       id: user.id,
@@ -761,14 +1454,9 @@ export async function login(req, res) {
       role: user.role,
     };
 
-    console.log(
-      "LOGIN SUCCESS:",
-      responseUser.email
-    );
+    console.log("LOGIN SUCCESS:", responseUser.email);
 
-    console.log(
-      "======================================"
-    );
+    console.log("======================================");
 
     return res.status(200).json({
       success: true,
@@ -776,44 +1464,27 @@ export async function login(req, res) {
       user: responseUser,
     });
   } catch (error) {
-    console.error(
-      "======================================"
-    );
+    console.error("======================================");
 
-    console.error(
-      "LOGIN SERVER ERROR"
-    );
+    console.error("LOGIN SERVER ERROR");
 
     console.error(error);
 
-    console.error(
-      "======================================"
-    );
+    console.error("======================================");
 
     try {
-      const {
-        status,
-        message,
-      } = mapDbError(error);
+      const { status, message } = mapDbError(error);
 
-      return res
-        .status(status || 500)
-        .json({
-          success: false,
-          message:
-            message ||
-            "Login failed due to a server error",
-        });
+      return res.status(status || 500).json({
+        success: false,
+        message: message || "Login failed due to a server error",
+      });
     } catch (mapError) {
-      console.error(
-        "mapDbError failed:",
-        mapError
-      );
+      console.error("mapDbError failed:", mapError);
 
       return res.status(500).json({
         success: false,
-        message:
-          "Login failed due to a server error",
+        message: "Login failed due to a server error",
       });
     }
   }
@@ -827,8 +1498,7 @@ export async function login(req, res) {
 
 export async function refresh(req, res) {
   try {
-    const token =
-      req.cookies?.refreshToken;
+    const token = req.cookies?.refreshToken;
 
     if (!token) {
       return res.status(401).json({
@@ -840,30 +1510,25 @@ export async function refresh(req, res) {
     let decoded;
 
     try {
-      decoded =
-        verifyRefreshToken(token);
+      decoded = verifyRefreshToken(token);
     } catch {
       return res.status(401).json({
         success: false,
-        message:
-          "Invalid refresh token",
+        message: "Invalid refresh token",
       });
     }
 
     if (!decoded?.id) {
       return res.status(401).json({
         success: false,
-        message:
-          "Invalid refresh token",
+        message: "Invalid refresh token",
       });
     }
 
-    const tokenHash =
-      hashToken(token);
+    const tokenHash = hashToken(token);
 
-    const [rows] =
-      await pool.execute(
-        `SELECT
+    const [rows] = await pool.execute(
+      `SELECT
           rt.user_id,
           u.email,
           u.full_name,
@@ -876,16 +1541,12 @@ export async function refresh(req, res) {
          WHERE rt.token_hash = ?
            AND rt.expires_at > NOW()
          LIMIT 1`,
-        [tokenHash]
-      );
+      [tokenHash],
+    );
 
     const row = rows[0];
 
-    if (
-      !row ||
-      !row.is_active ||
-      !row.is_approved
-    ) {
+    if (!row || !row.is_active || !row.is_approved) {
       return res.status(401).json({
         success: false,
         message: "Session invalid",
@@ -899,8 +1560,7 @@ export async function refresh(req, res) {
       full_name: row.full_name,
     };
 
-    const accessToken =
-      signAccessToken(payload);
+    const accessToken = signAccessToken(payload);
 
     return res.status(200).json({
       success: true,
@@ -908,24 +1568,14 @@ export async function refresh(req, res) {
       user: payload,
     });
   } catch (e) {
-    console.error(
-      "REFRESH ERROR:",
-      e
-    );
+    console.error("REFRESH ERROR:", e);
 
-    const {
-      status,
-      message,
-    } = mapDbError(e);
+    const { status, message } = mapDbError(e);
 
-    return res
-      .status(status || 500)
-      .json({
-        success: false,
-        message:
-          message ||
-          "Refresh failed",
-      });
+    return res.status(status || 500).json({
+      success: false,
+      message: message || "Refresh failed",
+    });
   }
 }
 
@@ -937,46 +1587,33 @@ export async function refresh(req, res) {
 
 export async function logout(req, res) {
   try {
-    const token =
-      req.cookies?.refreshToken;
+    const token = req.cookies?.refreshToken;
 
     if (token) {
       try {
-        const decoded =
-          verifyRefreshToken(token);
+        const decoded = verifyRefreshToken(token);
 
-        const tokenHash =
-          hashToken(token);
+        const tokenHash = hashToken(token);
 
         await pool.execute(
           `DELETE FROM refresh_tokens
            WHERE user_id = ?
              AND token_hash = ?`,
-          [
-            decoded.id,
-            tokenHash,
-          ]
+          [decoded.id, tokenHash],
         );
       } catch {
         // Ignore invalid/expired token
       }
     }
 
-    const production =
-      process.env.NODE_ENV ===
-      "production";
+    const production = process.env.NODE_ENV === "production";
 
-    res.clearCookie(
-      "refreshToken",
-      {
-        httpOnly: true,
-        secure: production,
-        sameSite: production
-          ? "none"
-          : "lax",
-        path: "/api/auth",
-      }
-    );
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: production,
+      sameSite: production ? "none" : "lax",
+      path: "/api/auth",
+    });
 
     if (req.user?.id) {
       try {
@@ -986,13 +1623,10 @@ export async function logout(req, res) {
           "users",
           req.user.id,
           null,
-          clientIp(req)
+          clientIp(req),
         );
       } catch (auditError) {
-        console.error(
-          "Logout audit error:",
-          auditError
-        );
+        console.error("Logout audit error:", auditError);
       }
     }
 
@@ -1001,24 +1635,14 @@ export async function logout(req, res) {
       message: "Logged out",
     });
   } catch (e) {
-    console.error(
-      "LOGOUT ERROR:",
-      e
-    );
+    console.error("LOGOUT ERROR:", e);
 
-    const {
-      status,
-      message,
-    } = mapDbError(e);
+    const { status, message } = mapDbError(e);
 
-    return res
-      .status(status || 500)
-      .json({
-        success: false,
-        message:
-          message ||
-          "Logout failed",
-      });
+    return res.status(status || 500).json({
+      success: false,
+      message: message || "Logout failed",
+    });
   }
 }
 
@@ -1028,58 +1652,35 @@ export async function logout(req, res) {
 |--------------------------------------------------------------------------
 */
 
-export async function resetPasswordWithCode(
-  req,
-  res
-) {
+export async function resetPasswordWithCode(req, res) {
   try {
-    const {
-      email,
-      code,
-      new_password,
-      confirm_password,
-    } = req.body || {};
+    const { email, code, new_password, confirm_password } = req.body || {};
 
-    if (
-      !email ||
-      !code ||
-      !new_password ||
-      !confirm_password
-    ) {
+    if (!email || !code || !new_password || !confirm_password) {
       return res.status(400).json({
         success: false,
-        message:
-          "All fields are required",
+        message: "All fields are required",
       });
     }
 
-    if (
-      new_password !==
-      confirm_password
-    ) {
+    if (new_password !== confirm_password) {
       return res.status(400).json({
         success: false,
-        message:
-          "Passwords do not match",
+        message: "Passwords do not match",
       });
     }
 
-    if (
-      new_password.length < 8
-    ) {
+    if (new_password.length < 8) {
       return res.status(400).json({
         success: false,
-        message:
-          "Password must be at least 8 characters",
+        message: "Password must be at least 8 characters",
       });
     }
 
-    const cleanEmail =
-      email.trim().toLowerCase();
+    const cleanEmail = email.trim().toLowerCase();
 
-    const [users] =
-      await pool.execute(
-        `SELECT
+    const [users] = await pool.execute(
+      `SELECT
           id,
           full_name,
           email
@@ -1087,78 +1688,61 @@ export async function resetPasswordWithCode(
          WHERE email = ?
            AND is_active = TRUE
          LIMIT 1`,
-        [cleanEmail]
-      );
+      [cleanEmail],
+    );
 
-    const user =
-      users[0];
+    const user = users[0];
 
     if (!user) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid email or code",
+        message: "Invalid email or code",
       });
     }
 
-    const codeHash =
-      crypto
-        .createHash("sha256")
-        .update(
-          code.trim().toUpperCase()
-        )
-        .digest("hex");
+    const codeHash = crypto
+      .createHash("sha256")
+      .update(code.trim().toUpperCase())
+      .digest("hex");
 
-    const [codes] =
-      await pool.execute(
-        `SELECT id
+    const [codes] = await pool.execute(
+      `SELECT id
          FROM password_reset_codes
          WHERE user_id = ?
            AND code_hash = ?
            AND expires_at > NOW()
            AND used = 0
          LIMIT 1`,
-        [
-          user.id,
-          codeHash,
-        ]
-      );
+      [user.id, codeHash],
+    );
 
     if (!codes.length) {
       return res.status(400).json({
         success: false,
-        message:
-          "Invalid or expired code",
+        message: "Invalid or expired code",
       });
     }
 
-    const newHash =
-      await bcrypt.hash(
-        new_password,
-        SALT
-      );
+    const newHash = await bcrypt.hash(new_password, SALT);
 
     await pool.execute(
       `UPDATE password_reset_codes
        SET used = 1
        WHERE id = ?`,
-      [codes[0].id]
+      [codes[0].id],
     );
 
     await pool.execute(
       `UPDATE users
        SET password_hash = ?
        WHERE id = ?`,
-      [
-        newHash,
-        user.id,
-      ]
+      [newHash, user.id],
     );
 
     await pool.execute(
       `DELETE FROM refresh_tokens
        WHERE user_id = ?`,
-      [user.id]
+      [user.id],
     );
 
     try {
@@ -1168,49 +1752,32 @@ export async function resetPasswordWithCode(
         "users",
         user.id,
         {},
-        clientIp(req)
+        clientIp(req),
       );
     } catch (auditError) {
-      console.error(
-        "Password reset audit error:",
-        auditError
-      );
+      console.error("Password reset audit error:", auditError);
     }
 
     sendPasswordChangedEmail({
       toEmail: user.email,
       fullName: user.full_name,
     }).catch((err) => {
-      console.error(
-        "[mailer] Failed to send password-changed email:",
-        err
-      );
+      console.error("[mailer] Failed to send password-changed email:", err);
     });
 
     return res.json({
       success: true,
-      message:
-        "Password changed successfully. You can now log in.",
+      message: "Password changed successfully. You can now log in.",
     });
   } catch (e) {
-    console.error(
-      "RESET PASSWORD ERROR:",
-      e
-    );
+    console.error("RESET PASSWORD ERROR:", e);
 
-    const {
-      status,
-      message,
-    } = mapDbError(e);
+    const { status, message } = mapDbError(e);
 
-    return res
-      .status(status || 500)
-      .json({
-        success: false,
-        message:
-          message ||
-          "Password reset failed",
-      });
+    return res.status(status || 500).json({
+      success: false,
+      message: message || "Password reset failed",
+    });
   }
 }
 
@@ -1222,9 +1789,8 @@ export async function resetPasswordWithCode(
 
 export async function me(req, res) {
   try {
-    const [rows] =
-      await pool.execute(
-        `SELECT
+    const [rows] = await pool.execute(
+      `SELECT
           id,
           full_name,
           email,
@@ -1235,17 +1801,15 @@ export async function me(req, res) {
          FROM users
          WHERE id = ?
          LIMIT 1`,
-        [req.user.id]
-      );
+      [req.user.id],
+    );
 
-    const user =
-      rows[0];
+    const user = rows[0];
 
     if (!user) {
       return res.status(404).json({
         success: false,
-        message:
-          "User not found",
+        message: "User not found",
       });
     }
 
@@ -1254,23 +1818,13 @@ export async function me(req, res) {
       user,
     });
   } catch (e) {
-    console.error(
-      "ME ERROR:",
-      e
-    );
+    console.error("ME ERROR:", e);
 
-    const {
-      status,
-      message,
-    } = mapDbError(e);
+    const { status, message } = mapDbError(e);
 
-    return res
-      .status(status || 500)
-      .json({
-        success: false,
-        message:
-          message ||
-          "Unable to load user",
-      });
+    return res.status(status || 500).json({
+      success: false,
+      message: message || "Unable to load user",
+    });
   }
 }
