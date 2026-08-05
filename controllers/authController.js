@@ -1020,6 +1020,7 @@
 //       });
 //   }
 // }
+
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 
@@ -1135,8 +1136,15 @@ export async function register(req, res) {
 
 /*
 |--------------------------------------------------------------------------
-| LOGIN – UPDATED WITH QUERY TIMEOUT
+| LOGIN
 |--------------------------------------------------------------------------
+|
+| IMPORTANT:
+| - Does NOT use Promise.race() timeout.
+| - Uses the existing indexed email column.
+| - Uses pool.execute() exactly once.
+| - Does not perform any other DB operation until the user is found.
+|
 */
 
 export async function login(req, res) {
@@ -1152,7 +1160,7 @@ export async function login(req, res) {
 
     /*
     |--------------------------------------------------------------------------
-    | Validate input
+    | STEP 1 - Validate input
     |--------------------------------------------------------------------------
     */
 
@@ -1165,51 +1173,70 @@ export async function login(req, res) {
       });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    console.log("Clean email:", cleanEmail);
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 1 - Find user with timeout protection
+    | STEP 2 - Find user
     |--------------------------------------------------------------------------
     */
 
     console.log("STEP 1: Searching for user...");
 
-    const queryPromise = pool.execute(
-      `SELECT
-        id,
-        full_name,
-        email,
-        password_hash,
-        role,
-        is_approved,
-        is_active
-       FROM users
-       WHERE email = ?
-       LIMIT 1`,
-      [cleanEmail],
-    );
-
-    // Timeout after 10 seconds – adjust as needed
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Database query timeout after 10s")),
-        10000,
-      ),
-    );
-
     let rows;
+
     try {
-      const result = await Promise.race([queryPromise, timeoutPromise]);
-      rows = result[0];
-    } catch (queryError) {
-      console.error("DATABASE QUERY FAILED:", queryError.message);
-      throw queryError; // will be caught by outer catch
+      /*
+       * email is UNIQUE:
+       *
+       * uq_users_email (email)
+       *
+       * Therefore MySQL should find this row extremely quickly.
+       */
+
+      const [result] = await pool.execute(
+        `SELECT
+          id,
+          full_name,
+          email,
+          password_hash,
+          role,
+          is_approved,
+          is_active
+         FROM users
+         WHERE email = ?
+         LIMIT 1`,
+        [cleanEmail],
+      );
+
+      rows = result;
+
+      console.log("STEP 1 COMPLETE");
+      console.log("Rows returned:", rows.length);
+    } catch (dbError) {
+      console.error("======================================");
+      console.error("LOGIN DATABASE ERROR");
+      console.error("Code:", dbError?.code);
+      console.error("Errno:", dbError?.errno);
+      console.error("SQL State:", dbError?.sqlState);
+      console.error("Message:", dbError?.message);
+      console.error("======================================");
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to connect to the database during login",
+      });
     }
 
-    console.log("STEP 1 COMPLETE – rows length:", rows.length);
-
     const user = rows[0];
+
+    /*
+    |--------------------------------------------------------------------------
+    | STEP 3 - User not found
+    |--------------------------------------------------------------------------
+    */
 
     if (!user) {
       console.log("LOGIN FAILED: User not found");
@@ -1233,15 +1260,27 @@ export async function login(req, res) {
       });
     }
 
+    console.log("User found:");
+    console.log({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      is_approved: user.is_approved,
+      is_active: user.is_active,
+    });
+
     /*
     |--------------------------------------------------------------------------
-    | STEP 2 - Check password
+    | STEP 4 - Check password
     |--------------------------------------------------------------------------
     */
 
     console.log("STEP 2: Checking password...");
 
-    if (!user.password_hash || typeof user.password_hash !== "string") {
+    if (
+      !user.password_hash ||
+      typeof user.password_hash !== "string"
+    ) {
       console.log("LOGIN FAILED: Invalid password hash");
 
       return res.status(401).json({
@@ -1253,11 +1292,17 @@ export async function login(req, res) {
     let passwordOk = false;
 
     try {
-      passwordOk = await bcrypt.compare(password, user.password_hash);
+      passwordOk = await bcrypt.compare(
+        password,
+        user.password_hash,
+      );
     } catch (bcryptError) {
       console.error("BCRYPT ERROR:", bcryptError);
 
-      passwordOk = false;
+      return res.status(500).json({
+        success: false,
+        message: "Password verification failed",
+      });
     }
 
     console.log("STEP 2 COMPLETE");
@@ -1287,7 +1332,7 @@ export async function login(req, res) {
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 3 - Account status
+    | STEP 5 - Account status
     |--------------------------------------------------------------------------
     */
 
@@ -1316,7 +1361,7 @@ export async function login(req, res) {
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 4 - Create access token
+    | STEP 6 - Create access token
     |--------------------------------------------------------------------------
     */
 
@@ -1335,7 +1380,7 @@ export async function login(req, res) {
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 5 - Create refresh token
+    | STEP 7 - Create refresh token
     |--------------------------------------------------------------------------
     */
 
@@ -1350,6 +1395,10 @@ export async function login(req, res) {
 
     const decoded = verifyRefreshToken(refreshToken);
 
+    if (!decoded?.exp) {
+      throw new Error("Invalid refresh token expiry");
+    }
+
     const expiresAt = new Date(decoded.exp * 1000);
 
     if (Number.isNaN(expiresAt.getTime())) {
@@ -1360,39 +1409,51 @@ export async function login(req, res) {
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 6 - Save refresh token
+    | STEP 8 - Save refresh token
     |--------------------------------------------------------------------------
     */
 
     console.log("STEP 6: Deleting old refresh tokens...");
 
-    await pool.execute(
-      `DELETE FROM refresh_tokens
-       WHERE user_id = ?`,
-      [user.id],
-    );
+    try {
+      await pool.execute(
+        `DELETE FROM refresh_tokens
+         WHERE user_id = ?`,
+        [user.id],
+      );
 
-    console.log("STEP 6A COMPLETE");
+      console.log("STEP 6A COMPLETE");
 
-    console.log("STEP 6B: Saving new refresh token...");
+      console.log("STEP 6B: Saving new refresh token...");
 
-    await pool.execute(
-      `INSERT INTO refresh_tokens
-        (
-          user_id,
-          token_hash,
-          expires_at
-        )
-       VALUES
-        (?, ?, ?)`,
-      [user.id, tokenHash, expiresAt],
-    );
+      await pool.execute(
+        `INSERT INTO refresh_tokens
+          (
+            user_id,
+            token_hash,
+            expires_at
+          )
+         VALUES
+          (?, ?, ?)`,
+        [user.id, tokenHash, expiresAt],
+      );
 
-    console.log("STEP 6 COMPLETE");
+      console.log("STEP 6 COMPLETE");
+    } catch (tokenDbError) {
+      console.error("REFRESH TOKEN DATABASE ERROR:", tokenDbError);
+
+      /*
+       * Do not expose database internals to the client.
+       */
+      return res.status(500).json({
+        success: false,
+        message: "Unable to create login session",
+      });
+    }
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 7 - Set refresh cookie
+    | STEP 9 - Set refresh cookie
     |--------------------------------------------------------------------------
     */
 
@@ -1402,13 +1463,9 @@ export async function login(req, res) {
 
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
-
       secure: production,
-
       sameSite: production ? "none" : "lax",
-
       maxAge: 7 * 24 * 60 * 60 * 1000,
-
       path: "/api/auth",
     });
 
@@ -1416,7 +1473,7 @@ export async function login(req, res) {
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 8 - Audit login
+    | STEP 10 - Audit login
     |--------------------------------------------------------------------------
     */
 
@@ -1435,13 +1492,12 @@ export async function login(req, res) {
       console.log("STEP 8 COMPLETE");
     } catch (auditError) {
       console.error("LOGIN AUDIT ERROR:", auditError);
-
       console.log("Continuing login despite audit error.");
     }
 
     /*
     |--------------------------------------------------------------------------
-    | STEP 9 - Send response
+    | STEP 11 - Send response
     |--------------------------------------------------------------------------
     */
 
@@ -1455,7 +1511,6 @@ export async function login(req, res) {
     };
 
     console.log("LOGIN SUCCESS:", responseUser.email);
-
     console.log("======================================");
 
     return res.status(200).json({
@@ -1465,11 +1520,8 @@ export async function login(req, res) {
     });
   } catch (error) {
     console.error("======================================");
-
     console.error("LOGIN SERVER ERROR");
-
     console.error(error);
-
     console.error("======================================");
 
     try {
@@ -1477,7 +1529,8 @@ export async function login(req, res) {
 
       return res.status(status || 500).json({
         success: false,
-        message: message || "Login failed due to a server error",
+        message:
+          message || "Login failed due to a server error",
       });
     } catch (mapError) {
       console.error("mapDbError failed:", mapError);
@@ -1592,7 +1645,6 @@ export async function logout(req, res) {
     if (token) {
       try {
         const decoded = verifyRefreshToken(token);
-
         const tokenHash = hashToken(token);
 
         await pool.execute(
@@ -1654,9 +1706,19 @@ export async function logout(req, res) {
 
 export async function resetPasswordWithCode(req, res) {
   try {
-    const { email, code, new_password, confirm_password } = req.body || {};
+    const {
+      email,
+      code,
+      new_password,
+      confirm_password,
+    } = req.body || {};
 
-    if (!email || !code || !new_password || !confirm_password) {
+    if (
+      !email ||
+      !code ||
+      !new_password ||
+      !confirm_password
+    ) {
       return res.status(400).json({
         success: false,
         message: "All fields are required",
@@ -1723,7 +1785,10 @@ export async function resetPasswordWithCode(req, res) {
       });
     }
 
-    const newHash = await bcrypt.hash(new_password, SALT);
+    const newHash = await bcrypt.hash(
+      new_password,
+      SALT,
+    );
 
     await pool.execute(
       `UPDATE password_reset_codes
@@ -1755,19 +1820,26 @@ export async function resetPasswordWithCode(req, res) {
         clientIp(req),
       );
     } catch (auditError) {
-      console.error("Password reset audit error:", auditError);
+      console.error(
+        "Password reset audit error:",
+        auditError,
+      );
     }
 
     sendPasswordChangedEmail({
       toEmail: user.email,
       fullName: user.full_name,
     }).catch((err) => {
-      console.error("[mailer] Failed to send password-changed email:", err);
+      console.error(
+        "[mailer] Failed to send password-changed email:",
+        err,
+      );
     });
 
     return res.json({
       success: true,
-      message: "Password changed successfully. You can now log in.",
+      message:
+        "Password changed successfully. You can now log in.",
     });
   } catch (e) {
     console.error("RESET PASSWORD ERROR:", e);
