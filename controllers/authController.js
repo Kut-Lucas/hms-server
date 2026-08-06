@@ -1153,394 +1153,43 @@ export async function login(req, res) {
   console.log("Origin:", req.headers.origin);
   console.log("======================================");
 
-  try {
-    const { email, password } = req.body || {};
-
-    console.log("Email received:", email);
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 1 - Validate input
-    |--------------------------------------------------------------------------
-    */
-
-    if (!email || !password) {
-      console.log("LOGIN ERROR: Missing email or password");
-
-      return res.status(400).json({
-        success: false,
-        message: "Email and password required",
-      });
-    }
-
-    const cleanEmail = String(email).trim().toLowerCase();
-
-    console.log("Clean email:", cleanEmail);
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 2 - Find user
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 1: Searching for user...");
-
-    let rows;
-
-    try {
-      /*
-       * email is UNIQUE:
-       *
-       * uq_users_email (email)
-       *
-       * Therefore MySQL should find this row extremely quickly.
-       */
-
-      const [result] = await pool.execute(
-        `SELECT
-          id,
-          full_name,
-          email,
-          password_hash,
-          role,
-          is_approved,
-          is_active
-         FROM users
-         WHERE email = ?
-         LIMIT 1`,
-        [cleanEmail],
-      );
-
-      rows = result;
-
-      console.log("STEP 1 COMPLETE");
-      console.log("Rows returned:", rows.length);
-    } catch (dbError) {
-      console.error("======================================");
-      console.error("LOGIN DATABASE ERROR");
-      console.error("Code:", dbError?.code);
-      console.error("Errno:", dbError?.errno);
-      console.error("SQL State:", dbError?.sqlState);
-      console.error("Message:", dbError?.message);
-      console.error("======================================");
-
-      return res.status(500).json({
-        success: false,
-        message: "Unable to connect to the database during login",
-      });
-    }
-
-    const user = rows[0];
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 3 - User not found
-    |--------------------------------------------------------------------------
-    */
-
-    if (!user) {
-      console.log("LOGIN FAILED: User not found");
-
-      try {
-        await auditLog(
-          null,
-          "LOGIN_FAILED",
-          "users",
-          null,
-          { email: cleanEmail },
-          clientIp(req),
-        );
-      } catch (auditError) {
-        console.error("Failed login audit error:", auditError);
-      }
-
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials",
-      });
-    }
-
-    console.log("User found:");
-    console.log({
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      is_approved: user.is_approved,
-      is_active: user.is_active,
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 4 - Check password
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 2: Checking password...");
-
-    if (
-      !user.password_hash ||
-      typeof user.password_hash !== "string"
-    ) {
-      console.log("LOGIN FAILED: Invalid password hash");
-
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials",
-      });
-    }
-
-    let passwordOk = false;
-
-    try {
-      passwordOk = await bcrypt.compare(
-        password,
-        user.password_hash,
-      );
-    } catch (bcryptError) {
-      console.error("BCRYPT ERROR:", bcryptError);
-
-      return res.status(500).json({
-        success: false,
-        message: "Password verification failed",
-      });
-    }
-
-    console.log("STEP 2 COMPLETE");
-    console.log("Password correct:", passwordOk);
-
-    if (!passwordOk) {
-      console.log("LOGIN FAILED: Invalid password");
-
-      try {
-        await auditLog(
-          null,
-          "LOGIN_FAILED",
-          "users",
-          null,
-          { email: cleanEmail },
-          clientIp(req),
-        );
-      } catch (auditError) {
-        console.error("Failed login audit error:", auditError);
-      }
-
-      return res.status(401).json({
-        success: false,
-        message: "Invalid credentials",
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 5 - Account status
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 3: Checking account status...");
-
-    if (!user.is_active) {
-      console.log("LOGIN FAILED: Account inactive");
-
-      return res.status(403).json({
-        success: false,
-        message: "Account deactivated",
-      });
-    }
-
-    if (!user.is_approved) {
-      console.log("LOGIN FAILED: Account pending approval");
-
-      return res.status(403).json({
-        success: false,
-        message: "Account pending admin approval",
-      });
-    }
-
-    console.log("STEP 3 COMPLETE");
-    console.log("Account approved and active.");
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 6 - Create access token
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 4: Creating access token...");
-
-    const payload = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      full_name: user.full_name,
-    };
-
-    const accessToken = signAccessToken(payload);
-
-    console.log("STEP 4 COMPLETE");
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 7 - Create refresh token
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 5: Creating refresh token...");
-
-    const refreshToken = signRefreshToken({
-      id: user.id,
-      type: "refresh",
-    });
-
-    const tokenHash = hashToken(refreshToken);
-
-    const decoded = verifyRefreshToken(refreshToken);
-
-    if (!decoded?.exp) {
-      throw new Error("Invalid refresh token expiry");
-    }
-
-    const expiresAt = new Date(decoded.exp * 1000);
-
-    if (Number.isNaN(expiresAt.getTime())) {
-      throw new Error("Invalid refresh token expiry");
-    }
-
-    console.log("STEP 5 COMPLETE");
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 8 - Save refresh token
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 6: Deleting old refresh tokens...");
-
-    try {
-      await pool.execute(
-        `DELETE FROM refresh_tokens
-         WHERE user_id = ?`,
-        [user.id],
-      );
-
-      console.log("STEP 6A COMPLETE");
-
-      console.log("STEP 6B: Saving new refresh token...");
-
-      await pool.execute(
-        `INSERT INTO refresh_tokens
-          (
-            user_id,
-            token_hash,
-            expires_at
-          )
-         VALUES
-          (?, ?, ?)`,
-        [user.id, tokenHash, expiresAt],
-      );
-
-      console.log("STEP 6 COMPLETE");
-    } catch (tokenDbError) {
-      console.error("REFRESH TOKEN DATABASE ERROR:", tokenDbError);
-
-      /*
-       * Do not expose database internals to the client.
-       */
-      return res.status(500).json({
-        success: false,
-        message: "Unable to create login session",
-      });
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 9 - Set refresh cookie
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 7: Setting refresh cookie...");
-
-    const production = process.env.NODE_ENV === "production";
-
-    res.cookie("refreshToken", refreshToken, {
-      httpOnly: true,
-      secure: production,
-      sameSite: production ? "none" : "lax",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-      path: "/api/auth",
-    });
-
-    console.log("STEP 7 COMPLETE");
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 10 - Audit login
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 8: Writing login audit...");
-
-    try {
-      await auditLog(
-        user.id,
-        "LOGIN_SUCCESS",
-        "users",
-        user.id,
-        null,
-        clientIp(req),
-      );
-
-      console.log("STEP 8 COMPLETE");
-    } catch (auditError) {
-      console.error("LOGIN AUDIT ERROR:", auditError);
-      console.log("Continuing login despite audit error.");
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | STEP 11 - Send response
-    |--------------------------------------------------------------------------
-    */
-
-    console.log("STEP 9: Sending login response...");
-
-    const responseUser = {
-      id: user.id,
-      full_name: user.full_name,
-      email: user.email,
-      role: user.role,
-    };
-
-    console.log("LOGIN SUCCESS:", responseUser.email);
-    console.log("======================================");
-
-    return res.status(200).json({
-      success: true,
-      accessToken,
-      user: responseUser,
-    });
-  } catch (error) {
-    console.error("======================================");
-    console.error("LOGIN SERVER ERROR");
-    console.error(error);
-    console.error("======================================");
-
-    try {
-      const { status, message } = mapDbError(error);
-
-      return res.status(status || 500).json({
-        success: false,
-        message:
-          message || "Login failed due to a server error",
-      });
-    } catch (mapError) {
-      console.error("mapDbError failed:", mapError);
-
-      return res.status(500).json({
-        success: false,
-        message: "Login failed due to a server error",
-      });
-    }
-  }
+try {
+  const [result] = await pool.execute(
+    {
+      sql: `SELECT
+        id,
+        full_name,
+        email,
+        password_hash,
+        role,
+        is_approved,
+        is_active
+       FROM users
+       WHERE email = ?
+       LIMIT 1`,
+      timeout: 8000, // ms — was hanging with no timeout at all
+    },
+    [cleanEmail],
+  );
+
+  rows = result;
+
+  console.log("STEP 1 COMPLETE");
+  console.log("Rows returned:", rows.length);
+} catch (dbError) {
+  console.error("======================================");
+  console.error("LOGIN DATABASE ERROR");
+  console.error("Code:", dbError?.code);
+  console.error("Errno:", dbError?.errno);
+  console.error("SQL State:", dbError?.sqlState);
+  console.error("Message:", dbError?.message);
+  console.error("======================================");
+
+  return res.status(500).json({
+    success: false,
+    message: "Unable to connect to the database during login",
+  });
+}
 }
 
 /*
