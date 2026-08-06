@@ -12,7 +12,6 @@
 //   enableKeepAlive: true,
 //   keepAliveInitialDelay: 0,
 // });
-
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 
@@ -27,24 +26,32 @@ const pool = mysql.createPool({
 
   waitForConnections: true,
   connectionLimit: 10,
+  queueLimit: 20, // Prevents memory leaks / infinite hangs when pool is exhausted
 
-  // Was 0 (= unlimited queueing). Unlimited queueing is exactly why
-  // your login request hung silently instead of failing fast: once
-  // all 10 connections were stuck/leaked, new queries just queued
-  // forever with no error, until axios's 30s timeout gave up client-side.
-  queueLimit: 20,
+  // FIX 1: Set explicit 10s TCP keep-alive delay (0 can disable it on some TCP stacks)
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
 
+  // Handshake timeout
   connectTimeout: 10000,
 
-  // NEW: kill/recycle connections that have been idle too long so a
-  // provider-killed socket never gets reused and hangs on the next query.
-  idleTimeout: 60000, // ms a connection can sit idle in the pool
-  maxIdle: 10, // max idle connections kept around
-
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 0,
+  // Recycle idle connections before Render's proxy kills them
+  idleTimeout: 60000,
+  maxIdle: 10,
 
   charset: "utf8mb4",
+});
+
+// FIX 2: Attach pool error handler to evict dead sockets without crashing Node
+pool.on("error", (err) => {
+  console.error("⚠️ Unexpected MySQL Pool Error:", err.code || err.message);
+  if (
+    err.code === "PROTOCOL_CONNECTION_LOST" ||
+    err.code === "PROTOCOL_SEQUENCE_TIMEOUT" ||
+    err.code === "ECONNRESET"
+  ) {
+    console.warn("Evicting stale/broken connection from pool...");
+  }
 });
 
 console.log("======================================");
@@ -72,14 +79,17 @@ export async function testDatabaseConnection() {
   }
 }
 
-// NEW: periodic keep-alive ping. Detects/recycles dead connections
-// proactively every 4 minutes instead of letting a real user request
-// discover a stale socket and hang on it.
-setInterval(
+// Periodic keep-alive ping (runs every 4 minutes)
+const pingInterval = setInterval(
   () => {
     testDatabaseConnection().catch(() => {});
   },
   4 * 60 * 1000,
 );
+
+// Prevent this interval from holding the Node process open during graceful shutdown
+if (pingInterval.unref) {
+  pingInterval.unref();
+}
 
 export { pool };
