@@ -54,6 +54,69 @@ pool.on("error", (err) => {
   }
 });
 
+/*
+|--------------------------------------------------------------------------
+| FIX 3: Resilient execute() — stale pooled connections silently hang
+|--------------------------------------------------------------------------
+|
+| mysql2's pool releases a connection back to the free list even after a
+| query on it fails, so a single stale/dead socket (e.g. dropped by a
+| network proxy while idle) keeps getting handed to the next request and
+| hanging forever, since only queries that pass an explicit `timeout`
+| ever fail instead of hanging. This wraps every pool.execute() call with
+| a default timeout and, on a connection-level failure, destroys the bad
+| connection (instead of recycling it) and retries once on a fresh one.
+*/
+
+const DEFAULT_QUERY_TIMEOUT = 8000;
+
+const RETRYABLE_CODES = new Set([
+  "PROTOCOL_CONNECTION_LOST",
+  "PROTOCOL_SEQUENCE_TIMEOUT",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "EPIPE",
+]);
+
+pool.execute = async (sqlOrOptions, params = []) => {
+  const isOptionsForm =
+    typeof sqlOrOptions === "object" && sqlOrOptions !== null;
+
+  const sql = isOptionsForm ? sqlOrOptions.sql : sqlOrOptions;
+  const timeout = isOptionsForm
+    ? (sqlOrOptions.timeout ?? DEFAULT_QUERY_TIMEOUT)
+    : DEFAULT_QUERY_TIMEOUT;
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const connection = await pool.getConnection();
+
+    try {
+      const result = await connection.execute({ sql, timeout }, params);
+      connection.release();
+      return result;
+    } catch (err) {
+      const retryable =
+        RETRYABLE_CODES.has(err.code) || /timeout/i.test(err.message || "");
+
+      if (retryable) {
+        connection.destroy();
+      } else {
+        connection.release();
+      }
+
+      if (!retryable || attempt === 2) {
+        throw err;
+      }
+
+      console.warn(
+        "Retrying query after stale connection error:",
+        err.code || err.message,
+      );
+    }
+  }
+};
+
 console.log("======================================");
 console.log("MYSQL POOL INITIALIZED");
 console.log("Host:", process.env.DB_HOST);

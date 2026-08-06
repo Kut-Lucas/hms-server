@@ -1182,8 +1182,7 @@ export async function login(req, res) {
 
     try {
       const [result] = await pool.execute(
-        {
-          sql: `SELECT
+        `SELECT
             id,
             full_name,
             email,
@@ -1194,8 +1193,6 @@ export async function login(req, res) {
            FROM users
            WHERE email = ?
            LIMIT 1`,
-          timeout: 8000,
-        },
         [cleanEmail],
       );
 
